@@ -1,0 +1,65 @@
+name: security-vulnerability-scanner
+version: "1.0.0"
+description: "AI agent environment for security code review and vulnerability detection"
+author: "Team Suika"
+tags: ["security", "code-review", "vulnerability-detection", "cybersecurity"]
+
+tasks:
+  - id: 1
+    name: "Single File Audit"
+    difficulty: easy
+    max_steps: 10
+    num_vulnerabilities: 3
+
+  - id: 2
+    name: "Multi-File Flask App"
+    difficulty: medium
+    max_steps: 20
+    num_vulnerabilities: 5
+
+  - id: 3
+    name: "Real-World Project Audit"
+    difficulty: hard
+    max_steps: 40
+    num_vulnerabilities: 7
+
+observation_space:
+  type: structured
+  fields:
+    - name: files
+      type: "dict[str, str]"
+      description: "Filename to full source code of currently visible files"
+    - name: current_findings
+      type: "list[Finding]"
+      description: "All vulnerabilities reported so far this episode"
+    - name: step_number
+      type: int
+      description: "Current step count"
+    - name: task_id
+      type: int
+      description: "Active task identifier (1, 2, or 3)"
+    - name: feedback
+      type: str
+      description: "Result of the last action taken"
+    - name: remaining_steps
+      type: int
+      description: "Steps remaining before episode auto-terminates"
+
+action_space:
+  type: discrete
+  actions:
+    - name: report_vulnerability
+      description: "Report a found vulnerability with type, line, severity, and fix"
+    - name: request_file
+      description: "Request to see a hidden file"
+    - name: mark_complete
+      description: "Signal that the scan is complete"
+    - name: add_note
+      description: "Add a reasoning note (graded in Task 3)"
+
+entry_point: "main:app"
+
+reward:
+  min: -0.5
+  max: 0.6
+  description: "Per-step reward: +0.3 type match, +0.1 line bonus, +0.1 fix quality, +0.1 severity (T3), -0.1 false positive"
