@@ -1,0 +1,4 @@
+HF_TOKEN=<token>
+API_BASE_URL=<api_url>
+MODEL_NAME=<model_name>
+ENV_BASE_URL=<localhost_url>
