@@ -241,17 +241,16 @@ def call_llm_with_retry(messages: list[dict], max_retries: int = 3) -> str:
                 model=MODEL_NAME,
                 messages=messages,
                 temperature=0.1,
-                max_tokens=1000,
+                max_tokens=500,
             )
             return response.choices[0].message.content
         except Exception as e:
             if attempt == max_retries - 1:
                 raise RuntimeError(f"LLM API failed after {max_retries} attempts: {e}")
-            wait_time = 2 ** attempt
+            wait_time = 5 * (2 ** attempt)
             print(f"  ⚠ LLM API error (attempt {attempt + 1}): {e}. Retrying in {wait_time}s...", flush=True)
             time.sleep(wait_time)
     return ""
-
 
 # ─── Main Agent Loop ──────────────────────────────────────────
 
@@ -345,16 +344,54 @@ def run_task(task_id: int) -> dict:
     print(f"  Steps used: {step_count} / {max_fallback_steps - 2}", flush=True)
     print(f"  Score: {final_score:.3f}", flush=True)
 
-    return {
-        "task_id": task_id,
-        "final_score": final_score,
-        "steps": step_logs,
-        "total_steps": step_count,
-        "true_positives": true_positives,
-        "false_positives": false_positives,
-        "ground_truth_count": gt_count,
-    }
+    # ── Collect security analysis summary from environment (if available) ──
+    security_analysis = {}
+    try:
+        analysis_resp = http_client.get("/state")
+        analysis_resp.raise_for_status()
+        state = analysis_resp.json()
 
+        # REAL analysis summary from environment
+        security_analysis = state.get("security_analysis", {})
+
+    except Exception:
+        security_analysis = {"status": "analysis_summary_unavailable"}
+
+    # Detect missed vulnerabilities
+    missed_vulnerabilities = []
+
+    try:
+        state_resp = http_client.get("/state")
+        state_resp.raise_for_status()
+        state = state_resp.json()
+
+        ground_truth = state.get("ground_truth", [])
+        findings = state.get("findings", [])
+
+        reported = {
+        (f["file"], f["line_number"], f["vulnerability_type"])
+        for f in findings
+        }
+
+        for gt in ground_truth:
+            key = (gt["file"], gt["line"], gt["type"])
+            if key not in reported:
+                missed_vulnerabilities.append(gt)
+
+    except Exception:
+        missed_vulnerabilities = []
+
+    return {
+    "task_id": task_id,
+    "final_score": final_score,
+    "steps": step_logs,
+    "total_steps": step_count,
+    "true_positives": true_positives,
+    "false_positives": false_positives,
+    "ground_truth_count": gt_count,
+    "missed_vulnerabilities": missed_vulnerabilities,
+    "security_analysis": security_analysis
+    }
 
 def main():
     """Run the agent through all 3 tasks and print summary."""

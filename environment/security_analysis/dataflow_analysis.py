@@ -8,37 +8,25 @@ potential security-sensitive data paths.
 import ast
 from typing import Dict, List
 
-def analyze_dataflows(files: Dict[str, str]) -> dict[str, List[dict]]:
-    """
-    Analyze variable flows inside Python files.
+def analyze_dataflows(files: Dict[str, str]) -> Dict[str, List[dict]]:
 
-    Returns:
-        {
-            filename: [
-                {
-                    "source": str,
-                    "sink": str,
-                    "line": int,
-                    "risk": str
-                }
-            ]
-        }
-    """
-
-    results: Dict[str,List[dict]] = {}
+    results: Dict[str, List[dict]] = {}
 
     for filename, code in files.items():
         flows: List[dict] = []
 
         try:
-            tree = ast.aprse(code)
+            tree = ast.parse(code)
         except SyntaxError:
             results[filename] = []
             continue
 
         for node in ast.walk(tree):
+
             if isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Name) and node.func.id=='open':
+
+                # open()
+                if isinstance(node.func, ast.Name) and node.func.id == "open":
                     flows.append({
                         "source": "variable_input",
                         "sink": "open",
@@ -46,24 +34,26 @@ def analyze_dataflows(files: Dict[str, str]) -> dict[str, List[dict]]:
                         "risk": "filesystem_access"
                     })
 
+                # requests.get()
                 if isinstance(node.func, ast.Attribute):
-                    if node.func.attr=='get':
+                    if node.func.attr == "get":
                         flows.append({
                             "source": "variable_input",
                             "sink": "requests.get",
                             "line": node.lineno,
-                            "risk": "netwoek_request"
+                            "risk": "network_request"
                         })
 
+                # pickle.loads()
                 if isinstance(node.func, ast.Attribute):
-                    if node.func.attr=='loads':
+                    if node.func.attr == "loads":
                         flows.append({
-                            "source": "varibale_input",
+                            "source": "variable_input",
                             "sink": "pickle.loads",
                             "line": node.lineno,
                             "risk": "deserialization"
                         })
-        
+
         results[filename] = flows
 
     return results
