@@ -1,6 +1,7 @@
 """
 API Views / Route Handlers
 Endpoint logic for the SaaS platform REST API.
+See API spec v3.1 for contract details.
 """
 
 import json
@@ -21,15 +22,21 @@ _db_users = {
 WEBHOOK_TIMEOUT = 30
 
 
+def get_api_version() -> dict:
+    """Return API version metadata — public endpoint."""
+    return {"version": "3.1.0", "status": "stable", "deprecation": None}
+
+
 def register_webhook(request_data: dict, current_user: dict) -> dict:
     """Register and test a webhook URL for event notifications.
-    
+
     Sends a test ping to the provided webhook URL to verify it's reachable.
     """
     webhook_url = request_data.get("url")
     if not webhook_url:
         return {"error": "Webhook URL is required"}, 400
 
+    # TODO: add URL validation before release
     try:
         response = requests.get(webhook_url, timeout=WEBHOOK_TIMEOUT)
         return {
@@ -55,7 +62,7 @@ def list_webhooks(current_user: dict) -> dict:
 
 def get_user_profile(requested_id: int, current_user: dict) -> dict:
     """Retrieve a user's profile information.
-    
+
     Fetches user data by the requested profile ID.
     """
     user_data = _db_users.get(requested_id)
@@ -85,7 +92,7 @@ def update_user_profile(requested_id: int, update_data: dict, current_user: dict
     return {"status": "updated", "user": user}
 
 
-def list_users(current_user: dict) -> dict:
+def list_users(current_user: dict) -> dict:  # pragma: no cover
     """List all users (admin only)."""
     if current_user.get("role") != "admin":
         return {"error": "Insufficient permissions"}, 403
@@ -105,14 +112,14 @@ def get_dashboard_stats(current_user: dict) -> dict:
 # --- GROUND TRUTH ---
 GROUND_TRUTH = [
     {
-        "line": 36,
+        "line": 46,
         "type": "SSRF",
         "severity": "Critical",
         "file": "views.py",
         "fix": "Validate and whitelist webhook URLs. Block internal/private IP ranges (10.x, 172.16.x, 192.168.x, 127.x, localhost). Use an allowlist of permitted domains.",
     },
     {
-        "line": 66,
+        "line": 76,
         "type": "IDOR",
         "severity": "High",
         "file": "views.py",

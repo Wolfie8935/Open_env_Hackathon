@@ -1,8 +1,10 @@
 """
 Task 3: Real-World SaaS Platform API
 Hard difficulty — 5 files, 7 vulnerabilities, 40 steps.
+Uses TRIAGE mode: initial files shown as skeletons.
 """
 
+import ast
 from pathlib import Path
 
 from environment.tasks.base_task import BaseTask
@@ -12,8 +14,9 @@ class Task3RealWorld(BaseTask):
     """Real-world SaaS API audit — hard difficulty.
 
     The agent analyzes a production-style REST API with authentication,
-    webhooks, XML parsing, and user management. Only 2 of 5 files are
-    initially visible. Severity scoring is enabled.
+    webhooks, XML parsing, and user management. Only file SKELETONS are
+    initially visible. Agent must request_file to see full content.
+    Severity scoring is enabled.
     """
 
     task_id = 3
@@ -35,8 +38,28 @@ class Task3RealWorld(BaseTask):
         self.ground_truth = TASK3_GROUND_TRUTH
 
     def get_initial_files(self) -> dict[str, str]:
-        """Show only config.py and views.py at start.
+        """Task 3 starts with file skeletons — only signatures visible.
 
-        Agent must request auth.py, serializers.py, and middleware.py.
+        Agent must request_file to see full content.
+        This forces deliberate file selection based on architecture understanding.
         """
-        return {k: v for k, v in self.files.items() if k in ["config.py", "views.py"]}
+        skeletons = {}
+        for fname in ["config.py", "views.py"]:
+            if fname in self.files:
+                skeletons[fname] = self._get_skeleton(self.files[fname])
+        return skeletons
+
+    def _get_skeleton(self, content: str) -> str:
+        """Extract only class/function signatures from a file."""
+        lines = content.split('\n')
+        skeleton_lines = ['# [FILE SKELETON — use request_file to see full content]', '']
+        try:
+            tree = ast.parse(content)
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    lineno = node.lineno
+                    if lineno <= len(lines):
+                        skeleton_lines.append(f"# Line {lineno}: {lines[lineno-1].strip()}")
+        except SyntaxError:
+            skeleton_lines.append('# [Could not parse — request file for full content]')
+        return '\n'.join(skeleton_lines)

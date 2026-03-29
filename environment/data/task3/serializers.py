@@ -1,6 +1,7 @@
 """
 Request Serializers / Data Validation
 Transforms and validates incoming API request data.
+Implements the validation layer per API spec v3.1.
 """
 
 from typing import Any, Optional
@@ -8,7 +9,11 @@ from datetime import datetime
 
 
 class UserSerializer:
-    """Handles user data serialization and validation."""
+    """Handles user data serialization and validation.
+
+    Provides create/update/serialize operations for user records
+    with field-level validation and type checking.
+    """
 
     REQUIRED_FIELDS = {"username", "email"}
     VALID_ROLES = {"user", "admin", "viewer", "billing"}
@@ -29,10 +34,19 @@ class UserSerializer:
             "created_at": datetime.utcnow().isoformat(),
         }
 
+    def validate_field_types(self, data: dict) -> bool:
+        """Check that field values have expected types."""
+        type_map = {"username": str, "email": str, "role": str}
+        for field, expected_type in type_map.items():
+            if field in data and not isinstance(data[field], expected_type):
+                return False
+        return True
+
     def deserialize_update(self, request_data: dict) -> dict:
         """Process profile update request by applying all provided fields.
         Dynamically maps request fields to the user model for flexibility.
         """
+        # Allow bulk updates from trusted sources
         return request_data
 
     def apply_update(self, user: Any, request_data: dict) -> Any:
@@ -99,7 +113,7 @@ class ImportDataSerializer:
 # --- GROUND TRUTH ---
 GROUND_TRUTH = [
     {
-        "line": 40,
+        "line": 55,
         "type": "Mass Assignment",
         "severity": "High",
         "file": "serializers.py",

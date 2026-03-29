@@ -38,12 +38,8 @@ if not API_KEY:
         "Set it in your .env file or export it."
     )
 
-API_BASE_URL = os.environ.get(
-    "API_BASE_URL", API_BASE_URL
-)
-MODEL_NAME = os.environ.get(
-    "MODEL_NAME", MODEL_NAME
-)
+API_BASE_URL = os.environ.get("API_BASE_URL", API_BASE_URL)
+MODEL_NAME = os.environ.get("MODEL_NAME", MODEL_NAME)
 ENV_BASE_URL = os.environ.get("ENV_BASE_URL", ENV_BASE_URL)
 
 client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
@@ -94,7 +90,7 @@ You must use ONLY these exact vulnerability type strings when reporting:
    - Check CORS configuration
 4. Report vulnerabilities from Critical to Low severity
 5. For each finding, write a suggested_fix of at least 30 words that names the specific safe alternative
-6. Call mark_complete only when you have reviewed every single file
+6. Call mark_complete only when you have reviewed every single file AND verified the checklist below
 
 ## SPECIFIC PATTERNS TO FIND
 - `eval(` anywhere near user input → Command Injection
@@ -113,6 +109,43 @@ You must use ONLY these exact vulnerability type strings when reporting:
 - route with no @login_required or auth check → Broken Authentication
 - API keys, passwords, or tokens as hardcoded string literals → Hardcoded Secret
 
+## TIMING ATTACK — EXACT PATTERN TO FIND
+  if token == stored_token:   ← THIS IS A TIMING ATTACK
+  if user_token == db_token:  ← THIS IS A TIMING ATTACK
+  Type name to use: "Timing Attack" (NOT "Weak Cryptography")
+  File to check: auth.py — look at every if statement that compares strings
+
+## IDOR — EXACT PATTERN TO FIND
+  user_id = request.args.get('id')
+  user = db.query(User).filter_by(id=user_id).first()  ← no ownership check
+  Missing: if user_id != current_user.id: raise Forbidden
+  Type name to use: "IDOR"
+  File to check: views.py — look at every endpoint that fetches by an ID parameter
+
+## MASS ASSIGNMENT — EXACT PATTERN TO FIND
+  User(**request.json())      ← THIS IS MASS ASSIGNMENT
+  user.__dict__.update(data)  ← THIS IS MASS ASSIGNMENT
+  model = Model(**request_data)  ← THIS IS MASS ASSIGNMENT
+  Type name to use: "Mass Assignment"
+  File to check: serializers.py — look at model constructors
+
+## XXE INJECTION — EXACT PATTERN TO FIND
+  import xml.etree.ElementTree as ET
+  ET.parse(user_input)        ← THIS IS XXE INJECTION
+  ET.fromstring(request.data) ← THIS IS XXE INJECTION
+  Type name to use: "XXE Injection"
+  File to check: middleware.py — look for any XML parsing
+
+## DO NOT REPORT THESE — THEY ARE NOT VULNERABILITIES IN THIS CODEBASE
+- SHA-256 usage for request ID generation or non-password hashing → NOT a vulnerability
+- Flask SECRET_KEY in config.py → NOT a vulnerability (standard Flask pattern)
+- MD5 used for request tracking or cache keys (only MD5 on PASSWORDS is a vulnerability)
+- Any import statement itself → NOT a vulnerability
+- requests.get() for health checks or internal API calls with hardcoded safe URLs → NOT a vulnerability
+
+If you are about to report Weak Cryptography, ask yourself: is this hashing a PASSWORD? If no, do not report it.
+If you are about to report Hardcoded Secret, ask yourself: is this a JWT secret, API key, or auth token? If it is a Flask SECRET_KEY used for session signing in config, do not report it.
+
 ## CRITICAL REMINDERS
 - "Timing Attack" is NOT "Weak Cryptography" — if you see == comparison for tokens/passwords, use "Timing Attack"
 - "JWT Misconfiguration" is NOT "Hardcoded Secret" — if you see a hardcoded JWT secret key, use "JWT Misconfiguration"
@@ -120,6 +153,18 @@ You must use ONLY these exact vulnerability type strings when reporting:
 - Look for any endpoint that fetches a record using an ID from the request without checking ownership → "IDOR"
 - Look for any place where request.data, request.json(), or user-supplied dict is passed directly to a model constructor or __dict__.update() → "Mass Assignment"
 - Look for xml.etree.ElementTree.parse() or ET.fromstring() called on user-supplied data without defusedxml → "XXE Injection"
+
+## MANDATORY PRE-COMPLETION CHECKLIST
+Before calling mark_complete you MUST verify each item below mentally. If you are on Task 3, this checklist is REQUIRED:
+□ config.py — Did I check for DEBUG=True AND hardcoded JWT_SECRET? (2 vulnerabilities)
+□ views.py — Did I check for requests.get(user_url) AND unchecked ID parameter? (2 vulnerabilities)
+□ auth.py — Did I check for == comparison on tokens instead of hmac.compare_digest()?
+□ serializers.py — Did I check for request.data passed directly to model constructor?
+□ middleware.py — Did I check for ET.parse() or ElementTree on user input?
+
+Task 3 has EXACTLY 7 vulnerabilities. If your finding count is below 7, do NOT call mark_complete. Keep analyzing.
+Task 2 has EXACTLY 5 vulnerabilities. If your finding count is below 5, do NOT call mark_complete. Keep analyzing.
+Task 1 has EXACTLY 3 vulnerabilities. If your finding count is below 3, do NOT call mark_complete. Keep analyzing.
 
 ## OUTPUT FORMAT
 You MUST respond with ONLY a valid JSON object. No text before or after. No markdown. No explanation outside the JSON.
@@ -132,6 +177,10 @@ Examples:
 
 Never use a vulnerability type not in the list above. Never call mark_complete before reviewing all files.
 """
+
+# ─── Expected vulnerability counts per task ───────────────────
+
+EXPECTED_VULN_COUNTS = {1: 3, 2: 5, 3: 7}
 
 
 # ─── Helper Functions ─────────────────────────────────────────
@@ -150,7 +199,73 @@ def env_step(action: dict) -> dict:
     return response.json()
 
 
-def format_observation(obs: dict) -> str:
+def format_static_hints(security_state: dict) -> str:
+    """Format static analysis results as clean readable text (not raw dict dumps).
+
+    Deduplicates chains, caps per-file entries to 3, and formats as
+    human-readable lines instead of raw Python dicts.
+    """
+    lines = []
+
+    # ── Static Analysis Hints ─────────────────────────────────
+    static = security_state.get("static_analysis", {})
+    if static:
+        hint_lines = []
+        for filename, findings in sorted(static.items()):
+            if not findings:
+                continue
+            # Cap to 3 highest-risk entries (or just first 3 if no risk_score)
+            capped = sorted(findings, key=lambda x: x.get("risk_score", 0), reverse=True)[:3]
+            for f in capped:
+                hint_lines.append(f"  {filename}: {f.get('type', '?')} at line {f.get('line', '?')}")
+        if hint_lines:
+            lines.append("Static Analysis Hints:")
+            lines.extend(hint_lines)
+
+    # ── Data Flow Risks ───────────────────────────────────────
+    dataflow = security_state.get("dataflow_analysis", {})
+    if dataflow:
+        flow_lines = []
+        for filename, flows in sorted(dataflow.items()):
+            if not flows:
+                continue
+            # Cap to 3 per file
+            capped = flows[:3]
+            for fl in capped:
+                sink = fl.get("sink", "?")
+                risk = fl.get("risk", "?")
+                line = fl.get("line", "?")
+                flow_lines.append(f"  {filename}: user input reaches {sink} (line {line}) — {risk.upper()}")
+        if flow_lines:
+            lines.append("\nData Flow Risks:")
+            lines.extend(flow_lines)
+
+    # ── Vulnerability Chains ──────────────────────────────────
+    chains = security_state.get("attack_chains", [])
+    if chains:
+        # Deduplicate by (frozenset(files), chain_type)
+        seen: set = set()
+        deduped = []
+        for chain in chains:
+            key = (tuple(sorted(chain.get("files", []))), chain.get("chain_type", ""))
+            if key not in seen:
+                seen.add(key)
+                deduped.append(chain)
+
+        chain_lines = []
+        for chain in deduped:
+            files_str = ", ".join(chain.get("files", []))
+            chain_type = chain.get("chain_type", "?")
+            severity = chain.get("severity", "?").upper()
+            chain_lines.append(f"  {files_str}: {chain_type} [{severity}]")
+        if chain_lines:
+            lines.append("\nVulnerability Chains Detected:")
+            lines.extend(chain_lines)
+
+    return "\n".join(lines) if lines else ""
+
+
+def format_observation(obs: dict, security_state: Optional[dict] = None) -> str:
     """Format an observation into a readable prompt for the LLM."""
     parts = []
 
@@ -176,11 +291,18 @@ def format_observation(obs: dict) -> str:
                 f"at line {f['line_number']}"
             )
 
+    # Show clean static hints (if available)
+    if security_state:
+        hints_text = format_static_hints(security_state)
+        if hints_text:
+            parts.append("\n## Background Analysis (use as a guide, not ground truth)")
+            parts.append(hints_text)
+
     parts.append(
         "\n## Your Turn\n"
         "Analyze the code and respond with a single JSON action. "
         "If you haven't seen all files yet, request them first. "
-        "Then report vulnerabilities. When done, mark_complete."
+        "Then report vulnerabilities. When done, verify the checklist and mark_complete."
     )
 
     return "\n".join(parts)
@@ -240,8 +362,8 @@ def call_llm_with_retry(messages: list[dict], max_retries: int = 3) -> str:
             response = client.chat.completions.create(
                 model=MODEL_NAME,
                 messages=messages,
-                temperature=0.1,
-                max_tokens=500,
+                temperature=0.0,
+                max_tokens=1500,
             )
             return response.choices[0].message.content
         except Exception as e:
@@ -251,6 +373,56 @@ def call_llm_with_retry(messages: list[dict], max_retries: int = 3) -> str:
             print(f"  ⚠ LLM API error (attempt {attempt + 1}): {e}. Retrying in {wait_time}s...", flush=True)
             time.sleep(wait_time)
     return ""
+
+
+def should_allow_mark_complete(findings: list, task_id: int, step: int) -> tuple[bool, str]:
+    """Check if the agent has found enough vulnerabilities before allowing mark_complete.
+
+    Returns (allowed: bool, message: str).
+    If allowed=False, the message should be injected back to the agent.
+    """
+    expected = EXPECTED_VULN_COUNTS.get(task_id, 0)
+    # Count only positive-reward findings (true positives)
+    found_count = len([f for f in findings if f.get("reward", 0) > 0])
+
+    if found_count < expected:
+        remaining = expected - found_count
+        msg = (
+            f"NOT YET COMPLETE. You have found {found_count}/{expected} vulnerabilities "
+            f"for Task {task_id}. {remaining} more remain undiscovered.\n\n"
+            f"Do NOT call mark_complete yet. Keep analyzing:\n"
+        )
+        if task_id == 3:
+            msg += (
+                "- config.py: Check for DEBUG=True AND hardcoded JWT_SECRET (2 vulns)\n"
+                "- views.py: Check for SSRF (requests.get with user URL) AND IDOR (no ownership check on ID param)\n"
+                "- auth.py: Check for == comparison on tokens (Timing Attack)\n"
+                "- serializers.py: Check for request.data passed to model constructor (Mass Assignment)\n"
+                "- middleware.py: Check for ET.parse() or ET.fromstring() on user input (XXE Injection)\n"
+            )
+        elif task_id == 2:
+            msg += (
+                "- Check all files for missed vulnerability patterns\n"
+                "- Look for Path Traversal, SQL Injection, Hardcoded secrets, SSRF, Command Injection\n"
+            )
+        elif task_id == 1:
+            msg += "- Check the file again for all 3 expected vulnerability patterns\n"
+        msg += "\nRespond with your next action (request_file, report_vulnerability, or add_note)."
+        return False, msg
+
+    return True, ""
+
+
+def get_security_state() -> Optional[dict]:
+    """Fetch the current security analysis state from the environment."""
+    try:
+        resp = http_client.get("/state")
+        resp.raise_for_status()
+        state = resp.json()
+        return state.get("security_analysis", {})
+    except Exception:
+        return None
+
 
 # ─── Main Agent Loop ──────────────────────────────────────────
 
@@ -269,16 +441,26 @@ def run_task(task_id: int) -> dict:
     true_positives = 0
     gt_count = 0
 
+    # Fetch initial static analysis hints
+    security_state = get_security_state()
+
     print(f"\n{'='*60}", flush=True)
     print(f"TASK {task_id}: {obs.get('feedback', 'Started')[:80]}", flush=True)
     print(f"{'='*60}", flush=True)
 
     step_count = 0
+    all_findings_with_rewards: list[dict] = []
+
     while not done and step_count < max_fallback_steps:
         step_count += 1
 
-        # Build user message from observation
-        user_msg = format_observation(obs)
+        # Build user message from observation (include static hints on first step only
+        # to avoid overwhelming context on later steps)
+        include_hints = (step_count == 1) and (security_state is not None)
+        user_msg = format_observation(
+            obs,
+            security_state=security_state if include_hints else None,
+        )
         messages.append({"role": "user", "content": user_msg})
 
         # Call LLM
@@ -301,6 +483,24 @@ def run_task(task_id: int) -> dict:
                 print(f"  Step {step_count} | ⚠ Could not parse action, using mark_complete", flush=True)
                 action = {"action_type": "mark_complete", "payload": {}}
 
+        # ── MARK_COMPLETE INTERCEPTOR ──────────────────────────
+        # Before allowing mark_complete, verify the agent has found enough vulnerabilities.
+        if action.get("action_type") == "mark_complete":
+            allowed, intercept_msg = should_allow_mark_complete(
+                all_findings_with_rewards, task_id, step_count
+            )
+            if not allowed:
+                print(
+                    f"  Step {step_count:2d} | mark_complete INTERCEPTED         | "
+                    f"Only {len([f for f in all_findings_with_rewards if f.get('reward', 0) > 0])}"
+                    f"/{EXPECTED_VULN_COUNTS[task_id]} found — forcing continuation",
+                    flush=True,
+                )
+                # Inject a user message telling the agent to keep going
+                messages.append({"role": "user", "content": intercept_msg})
+                # Continue loop without sending to environment
+                continue
+
         # Send to environment
         result = env_step(action)
 
@@ -310,6 +510,12 @@ def run_task(task_id: int) -> dict:
 
         # Track true/false positives
         if action_type == "report_vulnerability":
+            finding_record = {
+                "reward": reward,
+                "vulnerability_type": action.get("payload", {}).get("vulnerability_type", ""),
+                "file": action.get("payload", {}).get("file", ""),
+            }
+            all_findings_with_rewards.append(finding_record)
             if reward > 0:
                 true_positives += 1
             elif reward < 0:
@@ -350,16 +556,12 @@ def run_task(task_id: int) -> dict:
         analysis_resp = http_client.get("/state")
         analysis_resp.raise_for_status()
         state = analysis_resp.json()
-
-        # REAL analysis summary from environment
         security_analysis = state.get("security_analysis", {})
-
     except Exception:
         security_analysis = {"status": "analysis_summary_unavailable"}
 
     # Detect missed vulnerabilities
     missed_vulnerabilities = []
-
     try:
         state_resp = http_client.get("/state")
         state_resp.raise_for_status()
@@ -369,8 +571,8 @@ def run_task(task_id: int) -> dict:
         findings = state.get("findings", [])
 
         reported = {
-        (f["file"], f["line_number"], f["vulnerability_type"])
-        for f in findings
+            (f["file"], f["line_number"], f["vulnerability_type"])
+            for f in findings
         }
 
         for gt in ground_truth:
@@ -382,16 +584,17 @@ def run_task(task_id: int) -> dict:
         missed_vulnerabilities = []
 
     return {
-    "task_id": task_id,
-    "final_score": final_score,
-    "steps": step_logs,
-    "total_steps": step_count,
-    "true_positives": true_positives,
-    "false_positives": false_positives,
-    "ground_truth_count": gt_count,
-    "missed_vulnerabilities": missed_vulnerabilities,
-    "security_analysis": security_analysis
+        "task_id": task_id,
+        "final_score": final_score,
+        "steps": step_logs,
+        "total_steps": step_count,
+        "true_positives": true_positives,
+        "false_positives": false_positives,
+        "ground_truth_count": gt_count,
+        "missed_vulnerabilities": missed_vulnerabilities,
+        "security_analysis": security_analysis,
     }
+
 
 def main():
     """Run the agent through all 3 tasks and print summary."""

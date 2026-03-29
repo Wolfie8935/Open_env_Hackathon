@@ -1,6 +1,7 @@
 """
 Database Models for File Manager Application
 User and File models with authentication support.
+Part of the v2 schema — see migration doc DM-042.
 """
 
 import hashlib
@@ -10,6 +11,8 @@ from typing import Optional
 
 class User:
     """User model with authentication and role management."""
+
+    VALID_ROLES = {"admin", "user", "viewer"}
 
     def __init__(self, user_id: int, username: str, email: str, role: str = "user"):
         self.id = user_id
@@ -32,6 +35,10 @@ class User:
     def update_login(self) -> None:
         """Record a successful login timestamp."""
         self.last_login = datetime.utcnow()
+
+    def has_role(self, required_role: str) -> bool:
+        """Check if user has the specified role."""
+        return self.role == required_role
 
     def to_dict(self) -> dict:
         """Serialize user to dictionary (excludes password hash)."""
@@ -67,7 +74,7 @@ class FileRecord:
 # --- GROUND TRUTH ---
 GROUND_TRUTH = [
     {
-        "line": 27,
+        "line": 30,
         "type": "Weak Cryptography",
         "severity": "High",
         "file": "models.py",

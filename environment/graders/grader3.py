@@ -1,67 +1,124 @@
 """
-Grader 3: Weighted Composite
-Three-component score: Detection (50%), Severity Ranking (30%), Fix Quality (20%).
+Grader 3: Reasoning-Based Rubric
+Pure-Python grader evaluating detection, severity, fix specificity,
+and methodology documentation. No LLM calls.
 """
 
 from environment.graders.base_grader import BaseGrader
 from environment.models import Finding
-from environment.reward import normalize_vuln_type, _types_match, _has_fix_quality
+from environment.reward import _types_match, _has_fix_quality
+
+
+# Terms that indicate specific, actionable fixes (not generic advice)
+SPECIFIC_FIX_TERMS = [
+    "parameterized", "prepared statement", "os.environ", "environment variable",
+    "bcrypt", "argon2", "hmac.compare_digest", "ast.literal_eval",
+    "defusedxml", "whitelist", "allowlist", "os.path.basename",
+    "secure_filename", "json.loads", "rate limit", "decorator",
+    "@login_required", "csrf", "content security policy",
+]
+
+# Terms indicating chain/methodology reasoning
+CHAIN_TERMS = [
+    "chain", "combined", "leads to", "enables", "together",
+    "combined with", "escalat", "pivot", "lateral",
+]
 
 
 class Grader3(BaseGrader):
-    """Weighted composite grader testing full auditor skill set.
+    """Reasoning-based grader with multi-axis rubric.
 
-    Components:
-        - Detection (0.50): fraction of GT entries found
-        - Severity Ranking (0.30): severity accuracy for true positives
-        - Fix Quality (0.20): meaningful fix suggestions for true positives
+    Scoring axes (per GT entry matched):
+        - Detection accuracy:   0.40 (type + file)
+        - Line proximity:       0.10 (within ±3)
+        - Severity match:       0.15 (correct severity)
+        - Fix specificity:      0.20 (actionable fix terms)
+        - Fix quality:          0.15 (base fix quality)
+
+    False positive penalty: -0.12 per false positive.
+    Notes bonus: +0.05 if methodology notes provided (via notes param).
     """
 
-    def grade(self, findings: list[Finding], ground_truth: list[dict]) -> float:
+    def grade(self, findings: list[Finding], ground_truth: list[dict],
+              notes: list[str] | None = None) -> float:
         if not ground_truth:
             return 0.0
+        if not findings:
+            return 0.0
 
-        # Identify true positives
-        true_positives = []
-        matched_gt = []
-        used_gt_indices = set()
+        entry_scores = []
+        used_findings: set[int] = set()
 
-        for finding in findings:
-            for i, gt in enumerate(ground_truth):
-                if i in used_gt_indices:
+        for gt in ground_truth:
+            best_score = 0.0
+            best_idx = -1
+
+            for idx, finding in enumerate(findings):
+                if idx in used_findings:
                     continue
-                if _types_match(finding.vulnerability_type, gt["type"]) and finding.file == gt["file"]:
-                    true_positives.append(finding)
-                    matched_gt.append(gt)
-                    used_gt_indices.add(i)
-                    break
 
-        # Component 1 — Detection (weight 0.50)
-        detection_score = len(true_positives) / len(ground_truth)
+                if not _types_match(finding.vulnerability_type, gt["type"]):
+                    continue
+                if finding.file != gt["file"]:
+                    continue
 
-        # Component 2 — Severity Ranking (weight 0.30)
-        severity_matches = 0
-        for finding, gt in zip(true_positives, matched_gt):
-            if finding.severity.lower().strip() == gt["severity"].lower().strip():
-                severity_matches += 1
-        severity_score = severity_matches / len(ground_truth) if ground_truth else 0.0
+                # Detection accuracy: type + file match
+                score = 0.40
 
-        # Component 3 — Fix Quality (weight 0.20)
-        quality_fixes = 0
-        for finding in true_positives:
-            if len(finding.suggested_fix) > 20 and _has_fix_quality(finding.suggested_fix):
-                quality_fixes += 1
-        fix_score = quality_fixes / max(1, len(true_positives))
+                # Line proximity bonus
+                if abs(finding.line_number - gt["line"]) <= 3:
+                    score += 0.10
+
+                # Severity match
+                gt_sev = gt.get("severity", "").lower()
+                finding_sev = finding.severity.lower() if finding.severity else ""
+                if gt_sev and finding_sev == gt_sev:
+                    score += 0.15
+
+                # Fix specificity: uses specific actionable terms
+                fix_lower = (finding.suggested_fix or "").lower()
+                specific = sum(1 for t in SPECIFIC_FIX_TERMS if t in fix_lower)
+                if specific >= 2:
+                    score += 0.20
+                elif specific >= 1:
+                    score += 0.10
+
+                # Fix quality: base quality check
+                if _has_fix_quality(finding.suggested_fix):
+                    score += 0.15
+
+                if score > best_score:
+                    best_score = score
+                    best_idx = idx
+
+            if best_idx >= 0:
+                used_findings.add(best_idx)
+
+            entry_scores.append(best_score)
+
+        coverage = sum(entry_scores) / len(ground_truth)
 
         # False positive penalty
-        fp_count = len(findings) - len(true_positives)
-        fp_penalty = fp_count * 0.1
+        fp_count = 0
+        for idx, finding in enumerate(findings):
+            matched = False
+            for gt in ground_truth:
+                if _types_match(finding.vulnerability_type, gt["type"]) and finding.file == gt["file"]:
+                    matched = True
+                    break
+            if not matched:
+                fp_count += 1
 
-        final = (
-            0.50 * detection_score
-            + 0.30 * severity_score
-            + 0.20 * fix_score
-            - fp_penalty
-        )
+        fp_penalty = fp_count * 0.12
 
-        return max(0.0, min(1.0, final))
+        # Notes bonus: reward methodology documentation
+        notes_bonus = 0.0
+        if notes:
+            combined = " ".join(notes).lower()
+            if any(t in combined for t in CHAIN_TERMS):
+                notes_bonus = 0.05
+            elif len(combined) > 50:
+                notes_bonus = 0.02
+
+        raw = coverage - fp_penalty + notes_bonus
+        return max(0.0, min(1.0, raw))

@@ -1,6 +1,7 @@
 """
 Flask Application Configuration
 Centralized settings for the file management application.
+Follows 12-factor app principles where possible.
 """
 
 import os
@@ -27,6 +28,11 @@ def init_cors(app):
 def is_allowed_file(filename: str) -> bool:
     """Check if a file extension is in the whitelist."""
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def get_max_upload_mb() -> float:
+    """Return max upload size in megabytes for display purposes."""
+    return MAX_CONTENT_LENGTH / (1024 * 1024)
 
 
 # --- GROUND TRUTH ---

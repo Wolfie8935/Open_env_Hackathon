@@ -198,6 +198,8 @@ class Observation(BaseModel):
     task_id: int = Field(description="Active task identifier (1, 2, or 3)")
     feedback: str = Field(description="Result of the last action taken")
     remaining_steps: int = Field(description="Steps remaining before episode auto-terminates")
+    active_insights: list[str] = Field(default_factory=list, description="Insights unlocked by prior findings")
+    suspicious_files: list[str] = Field(default_factory=list, description="Files flagged by discoveries")
 
 
 class ReportVulnerabilityAction(BaseModel):

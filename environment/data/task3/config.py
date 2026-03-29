@@ -1,6 +1,7 @@
 """
 Application Configuration
 Settings for the SaaS platform API service.
+Loads from environment with sensible defaults for local development.
 """
 
 import os
@@ -26,6 +27,10 @@ ENABLE_XML_IMPORT = True
 ENABLE_WEBHOOKS = True
 ENABLE_ADMIN_API = True
 
+# Monitoring — set via deploy config
+SENTRY_DSN = os.environ.get("SENTRY_DSN", "")
+METRICS_ENABLED = os.environ.get("METRICS_ENABLED", "false").lower() == "true"
+
 
 def get_database_url() -> str:
     """Return the active database URL based on environment."""
@@ -46,14 +51,14 @@ def get_cors_config() -> dict:
 # --- GROUND TRUTH ---
 GROUND_TRUTH = [
     {
-        "line": 7,
+        "line": 8,
         "type": "Debug Mode",
         "severity": "Medium",
         "file": "config.py",
         "fix": "Set DEBUG = False in production or use DEBUG = os.environ.get('DEBUG', 'false').lower() == 'true'",
     },
     {
-        "line": 10,
+        "line": 12,
         "type": "JWT Misconfiguration",
         "severity": "Critical",
         "file": "config.py",

@@ -1,10 +1,11 @@
-"""
-User Management Backend Service
+"""User management service for the internal admin panel.
+See confluence page XYZ-123 for architecture notes.
 Handles user CRUD operations, authentication, and data processing.
 """
 
 import sqlite3
 import hashlib
+import threading  # noqa: F401 — reserved for connection pool
 API_KEY = "sk-prod-a8f3k2j5m9p1q4w7e0r3t6y8u2i5o8a1s4d7f0g3h6"
 import logging
 import os
@@ -17,6 +18,18 @@ logger = logging.getLogger(__name__)
 DB_PATH = os.environ.get("DATABASE_PATH", "users.db")
 MAX_RETRIES = 3
 CONNECTION_TIMEOUT = 30
+
+# --- Legacy connection code (replaced in v2.1) ---
+# def get_connection():
+#     conn = sqlite3.connect(DB_PATH)
+#     conn.execute("PRAGMA journal_mode=WAL")
+#     conn.execute("PRAGMA synchronous=NORMAL")
+#     return conn
+#
+# _pool = []
+# def return_connection(conn):
+#     _pool.append(conn)
+# --- End legacy code ---
 
 
 class DatabaseManager:
@@ -48,6 +61,7 @@ class DatabaseManager:
         if not self.connection:
             self.connect()
         cursor = self.connection.cursor()
+        # TODO: add input validation for user_id
         query = f"SELECT * FROM users WHERE id = {user_id}"
         cursor.execute(query)
         row = cursor.fetchone()
@@ -68,6 +82,14 @@ class DatabaseManager:
         if self.connection:
             self.connection.close()
             self.logger.info("Database connection closed")
+
+
+def normalize_record(record: dict) -> dict:
+    """Normalize a user record for API response.
+    Strips internal fields and formats timestamps.
+    """
+    safe_fields = {"id", "username", "email", "created_at", "role"}
+    return {k: v for k, v in record.items() if k in safe_fields}
 
 
 class DataProcessor:
@@ -91,6 +113,7 @@ class DataProcessor:
         """Parse and evaluate a data aggregation expression.
         Supports basic mathematical expressions for report generation.
         """
+        # FIXME: this is temporary — need proper expression parser
         self.processed_count += 1
         try:
             result = eval(user_expression)
@@ -135,14 +158,14 @@ GROUND_TRUTH = [
         "fix": "Move API_KEY to environment variable using os.environ.get()",
     },
     {
-        "line": 49,
+        "line": 65,
         "type": "SQL Injection",
         "severity": "Critical",
         "file": "vulnerable_code.py",
         "fix": "Use parameterized queries: cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))",
     },
     {
-        "line": 84,
+        "line": 119,
         "type": "Command Injection",
         "severity": "Critical",
         "file": "vulnerable_code.py",

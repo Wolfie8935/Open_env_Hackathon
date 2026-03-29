@@ -129,6 +129,8 @@ class SecurityScannerEnv:
             remaining_steps=max(
                 0, self.active_task.max_steps - self.state_manager.step_number
             ),
+            active_insights=self.state_manager.active_insights,
+            suspicious_files=self.state_manager.suspicious_files,
         )
 
         episode_score = compute_episode_score(
@@ -245,6 +247,14 @@ class SecurityScannerEnv:
 
         if reward > 0:
             feedback = f"Finding recorded: {finding.vulnerability_type}"
+            # Fix 1: cascading state discovery
+            from environment.reward import _types_match
+            for gt in self.active_task.ground_truth:
+                if _types_match(finding.vulnerability_type, gt["type"]) and finding.file == gt["file"]:
+                    insight = self.state_manager.process_trigger(finding.file, gt["type"])
+                    if insight:
+                        feedback = f"{feedback} | INSIGHT: {insight}"
+                    break
         elif reward < 0:
             feedback = f"False positive: {finding.vulnerability_type}"
         else:
@@ -275,12 +285,17 @@ class SecurityScannerEnv:
 
         self.state_manager.is_complete = True
 
-        episode_score = compute_episode_score(
+        base_score = compute_episode_score(
             self.state_manager.findings,
             self.active_task.ground_truth,
             self.active_task.task_id,
             notes=self.state_manager.notes,
         )
+
+        # Fix 1: chain bonus on top of base score
+        chain_bonus, chains = self.state_manager.compute_chain_bonuses()
+        self.state_manager.chains_completed = chains
+        episode_score = min(1.0, base_score + chain_bonus)
 
         return (
             f"Episode complete. Score: {episode_score:.3f}"
@@ -313,6 +328,8 @@ class SecurityScannerEnv:
                 task_id=self.active_task.task_id,
                 feedback=feedback,
                 remaining_steps=0,
+                active_insights=self.state_manager.active_insights,
+                suspicious_files=self.state_manager.suspicious_files,
             ),
             reward=0.0,
             done=True,

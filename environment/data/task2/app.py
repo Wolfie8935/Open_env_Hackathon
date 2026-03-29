@@ -1,6 +1,6 @@
-"""
-Flask File Manager Application
+"""Flask File Manager Application
 Routes for file upload, download, and user administration.
+Provides a RESTful interface for the internal file storage system.
 """
 
 import os
@@ -27,13 +27,26 @@ def login_required(f):
     return decorated_function
 
 
+def handle_error(error_code: int, message: str) -> dict:
+    """Standard error response formatter for the API."""
+    logger.warning(f"Error {error_code}: {message}")
+    return {"error": message, "code": error_code}
+
+
 def is_allowed_file(filename: str) -> bool:
     """Check if file extension is permitted."""
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+def get_health_status() -> dict:
+    """Health check for the file manager service."""
+    upload_exists = os.path.exists(UPLOAD_DIR)
+    return {"status": "healthy", "upload_dir_exists": upload_exists}
+
+
 def handle_login(username: str, password: str) -> dict:
     """Authenticate user and create session."""
+    # TODO: add rate limiting to prevent brute force
     # In production: validate against database
     logger.info(f"Login attempt for user: {username}")
     return {"status": "success", "user": username}
@@ -65,14 +78,15 @@ def handle_download(filename: str) -> tuple:
     with open(filepath, "rb") as f:
         content = f.read()
 
+    logger.info(f"File downloaded: {filename}")
     return content, 200, {"Content-Disposition": f"attachment; filename={filename}"}
 
 
+# NOTE: legacy endpoint, do not remove — used by admin dashboard v1
 def get_admin_users() -> dict:
     """Admin endpoint to list all registered users.
     Returns user data for the administration dashboard.
     """
-    # TODO: add proper admin authentication check
     users = [
         {"id": 1, "username": "admin", "role": "admin", "email": "admin@example.com"},
         {"id": 2, "username": "jdoe", "role": "user", "email": "jdoe@example.com"},
@@ -88,6 +102,7 @@ def handle_delete(filename: str) -> dict:
     filepath = os.path.join(UPLOAD_DIR, safe_name)
     if os.path.exists(filepath):
         os.remove(filepath)
+        logger.info(f"File deleted: {safe_name}")
         return {"status": "deleted", "filename": safe_name}
     return {"error": "File not found"}, 404
 
@@ -111,14 +126,14 @@ def get_file_list() -> dict:
 # --- GROUND TRUTH ---
 GROUND_TRUTH = [
     {
-        "line": 55,
+        "line": 78,
         "type": "Path Traversal",
         "severity": "High",
         "file": "app.py",
         "fix": "Sanitize filename with os.path.basename() or werkzeug.utils.secure_filename() and validate the resolved path stays within UPLOAD_DIR",
     },
     {
-        "line": 63,
+        "line": 88,
         "type": "Broken Authentication",
         "severity": "Critical",
         "file": "app.py",

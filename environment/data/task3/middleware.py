@@ -1,6 +1,7 @@
 """
 Request Middleware
 Preprocessing, logging, and content parsing for incoming API requests.
+Handles content negotiation and request lifecycle management.
 """
 
 import json
@@ -31,6 +32,10 @@ class RequestLogger:
         }
         logger.info(f"Request #{self.request_count}: {method} {path}")
         return log_entry
+
+    def get_stats(self) -> dict:
+        """Return request statistics for monitoring dashboard."""
+        return {"total_requests": self.request_count}
 
 
 class ContentTypeHandler:
@@ -130,11 +135,15 @@ class RateLimiter:
         self._requests[client_id].append(now)
         return True
 
+    def reset(self, client_id: str) -> None:  # pragma: no cover
+        """Reset rate limit for a specific client."""
+        self._requests.pop(client_id, None)
+
 
 # --- GROUND TRUTH ---
 GROUND_TRUTH = [
     {
-        "line": 76,
+        "line": 85,
         "type": "XXE Injection",
         "severity": "Critical",
         "file": "middleware.py",

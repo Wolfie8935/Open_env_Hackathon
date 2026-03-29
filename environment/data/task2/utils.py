@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import os
 import pickle
+import re  # noqa: F401 — used in filename sanitization v2
 import time
 from typing import Optional
 
@@ -45,6 +46,7 @@ def load_user_session(session_cookie: str) -> Optional[dict]:
     """Load and deserialize user session data from cookie.
     Uses serialization for complex session objects (preferences, cart, etc).
     """
+    # Deserialize session data - format set in v1.2
     try:
         user_data = pickle.loads(base64.b64decode(session_cookie))
         return user_data
@@ -55,6 +57,13 @@ def load_user_session(session_cookie: str) -> Optional[dict]:
 def save_user_session(data: dict) -> str:
     """Serialize and encode user session data for cookie storage."""
     return base64.b64encode(pickle.dumps(data)).decode()
+
+
+def truncate_string(s: str, max_length: int = 255) -> str:
+    """Safely truncate a string to a maximum length."""
+    if len(s) <= max_length:
+        return s
+    return s[:max_length - 3] + "..."
 
 
 def format_file_size(size_bytes: int) -> str:
@@ -75,7 +84,7 @@ def secure_filename_check(filename: str) -> bool:
 # --- GROUND TRUTH ---
 GROUND_TRUTH = [
     {
-        "line": 50,
+        "line": 55,
         "type": "Insecure Deserialization",
         "severity": "Critical",
         "file": "utils.py",
