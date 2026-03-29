@@ -20,34 +20,33 @@ from environment.security_analysis import (
     run_static_analysis,
     analyze_dataflows,
     evaluate_exploitability,
-    detect_attack_chains
+    detect_attack_chains,
 )
 
 class SecurityScannerEnv:
-    """OpenEnv-compatible security vulnerability scanner environment.
-
-    Supports 3 tasks of increasing difficulty. The agent interacts via
-    reset() and step() to find vulnerabilities in Python codebases.
-    """
+    """OpenEnv-compatible security vulnerability scanner environment."""
 
     def __init__(self):
         self.state_manager = StateManager()
         self.active_task = None
         self._initialized = False
 
+        # analysis storage
+        self._dependency_graph = {}
+        self._static_results = {}
+        self._dataflow_results = {}
+        self._exploitability_results = {}
+        self._attack_chains = []
+
     def reset(self, task_id: int) -> Observation:
-        """Start a new episode for the given task.
+        """Start a new episode."""
 
-        Args:
-            task_id: 1, 2, or 3
-
-        Returns:
-            Initial Observation with visible files and task context.
-        """
         task = self._load_task(task_id)
         self.active_task = task
         self.state_manager.initialize(task)
+
         try:
+
             self._dependency_graph = build_dependency_graph(task.files)
 
             self._static_results = run_static_analysis(task.files)
@@ -63,13 +62,20 @@ class SecurityScannerEnv:
                 self._dependency_graph,
                 self._exploitability_results,
             )
+
         except Exception:
-            # Never break the environment if analysis fails
             self._dependency_graph = {}
             self._static_results = {}
             self._dataflow_results = {}
             self._exploitability_results = {}
             self._attack_chains = []
+
+        # DEBUG OUTPUT
+        print("STATIC:", self._static_results)
+        print("DATAFLOW:", self._dataflow_results)
+        print("EXPLOIT:", self._exploitability_results)
+        print("CHAINS:", self._attack_chains)
+
         self._initialized = True
 
         return Observation(
@@ -79,26 +85,15 @@ class SecurityScannerEnv:
             task_id=task_id,
             feedback=(
                 f"Episode started for Task {task_id}: {task.name}. "
-                f"Analyze the code and report security vulnerabilities. "
-                f"You have {task.max_steps} steps. "
+                f"Analyze the code and report vulnerabilities. "
                 f"Files visible: {sorted(self.state_manager.visible_files)}. "
-                f"Hidden files available to request: {self.state_manager.get_available_files()}"
+                f"Hidden files: {self.state_manager.get_available_files()}"
             ),
             remaining_steps=task.max_steps,
         )
 
     def step(self, action: Action) -> StepResult:
-        """Process an agent action and return the result.
 
-        Args:
-            action: The agent's chosen action.
-
-        Returns:
-            StepResult with observation, reward, done flag, and info.
-
-        Raises:
-            HTTPException: 409 if called before reset().
-        """
         if not self._initialized:
             raise HTTPException(status_code=409, detail="Call /reset first")
 
@@ -143,7 +138,6 @@ class SecurityScannerEnv:
             notes=self.state_manager.notes,
         )
 
-        # Clamp reward to spec range [-0.5, 0.6]
         clamped_reward = max(-0.5, min(0.6, reward))
 
         return StepResult(
@@ -161,24 +155,84 @@ class SecurityScannerEnv:
         )
 
     def state(self) -> dict:
-        """Return the full episode state."""
         if not self._initialized:
-            raise HTTPException(status_code=409, detail="No active episode. Call /reset first")
-        return self.state_manager.to_state_dict()
-
-    def _handle_report(self, payload: dict) -> tuple[float, str, dict]:
-        """Process a vulnerability report action."""
-        try:
-            finding = Finding(
-                file=payload["file"],
-                line_number=payload["line_number"],
-                vulnerability_type=payload["vulnerability_type"],
-                severity=payload["severity"],
-                description=payload["description"],
-                suggested_fix=payload["suggested_fix"],
+            raise HTTPException(
+                status_code=409, detail="No active episode. Call /reset first"
             )
-        except (KeyError, ValueError) as e:
-            return 0.0, f"Invalid finding payload: {e}", {}
+
+        state = self.state_manager.to_state_dict()
+
+        state["findings"] = [
+            {
+                "file": f.file,
+                "line_number": f.line_number,
+                "vulnerability_type": f.vulnerability_type,
+                "severity": f.severity,
+            }
+            for f in self.state_manager.findings
+        ]
+
+        state["ground_truth"] = [
+            {
+                "file": gt.get("file"),
+                "line": gt.get("line"),
+                "type": gt.get("vulnerability_type") or gt.get("type"),
+            }
+            for gt in self.active_task.ground_truth
+    ]
+
+        state["security_analysis"] = self.get_security_analysis_summary()
+
+        return state
+
+    def get_security_analysis_summary(self) -> dict:
+        """Return both summary + full analysis."""
+
+        return {
+            "files_analyzed": len(self.active_task.files) if self.active_task else 0,
+
+            "dependency_graph": self._dependency_graph,
+
+            "static_analysis": self._static_results,
+
+            "dataflow_analysis": self._dataflow_results,
+
+            "exploitability_analysis": self._exploitability_results,
+
+            "attack_chains": self._attack_chains,
+
+            "summary": {
+                "dependency_edges":
+                    sum(len(v) for v in self._dependency_graph.values()),
+
+                "static_patterns_detected":
+                    sum(len(v) for v in self._static_results.values()),
+
+                "dataflows_detected":
+                    sum(len(v) for v in self._dataflow_results.values()),
+
+                "high_risk_flows":
+                    sum(
+                        1
+                        for flows in self._exploitability_results.values()
+                        for f in flows
+                        if isinstance(f, dict) and f.get("risk_score", 0) >= 0.7
+                    ),
+
+                "attack_chains_detected":
+                    len(self._attack_chains),
+            }
+        }
+
+    def _handle_report(self, payload: dict):
+        finding = Finding(
+            file=payload.get("file"),
+            line_number=payload.get("line_number"),
+            vulnerability_type=payload.get("vulnerability_type"),
+            severity=payload.get("severity", "Medium"),
+            description=payload.get("description", ""),
+            suggested_fix=payload.get("suggested_fix", ""),
+        )
 
         reward, breakdown = compute_step_reward(
             finding,
@@ -190,71 +244,67 @@ class SecurityScannerEnv:
         self.state_manager.add_finding(finding)
 
         if reward > 0:
-            feedback = (
-                f"Finding recorded: {finding.vulnerability_type} in {finding.file} "
-                f"at line {finding.line_number}. Reward: {reward:+.2f}"
-            )
+            feedback = f"Finding recorded: {finding.vulnerability_type}"
         elif reward < 0:
-            feedback = (
-                f"False positive recorded: {finding.vulnerability_type} in "
-                f"{finding.file}. Penalty: {reward:+.2f}"
-            )
+            feedback = f"False positive: {finding.vulnerability_type}"
         else:
-            feedback = (
-                f"Duplicate or zero-reward finding: {finding.vulnerability_type} "
-                f"in {finding.file}."
-            )
+            feedback = f"Duplicate finding: {finding.vulnerability_type}"
 
         return reward, feedback, breakdown
 
-    def _handle_request_file(self, payload: dict) -> str:
-        """Process a file request action."""
+    def _handle_request_file(self, payload):
+
         filename = payload.get("filename", "")
+
         if self.state_manager.reveal_file(filename):
-            available = self.state_manager.get_available_files()
+            remaining = self.state_manager.get_available_files()
+
             return (
                 f"File '{filename}' is now visible. "
-                f"Remaining hidden files: {available if available else 'none'}"
+                f"Remaining hidden files: {remaining if remaining else 'none'}"
             )
+
         elif filename in self.state_manager.visible_files:
             return f"File '{filename}' is already visible."
+
         else:
             all_files = sorted(self.active_task.files.keys())
-            return f"File '{filename}' not found in this task. Available files: {all_files}"
+            return f"File '{filename}' not found. Available files: {all_files}"
 
-    def _handle_mark_complete(self) -> tuple[str, float]:
-        """Process a mark-complete action."""
+    def _handle_mark_complete(self):
+
         self.state_manager.is_complete = True
+
         episode_score = compute_episode_score(
             self.state_manager.findings,
             self.active_task.ground_truth,
             self.active_task.task_id,
             notes=self.state_manager.notes,
         )
-        found = len(self.state_manager.findings)
-        total = len(self.active_task.ground_truth)
+
         return (
-            f"Episode complete. Findings: {found}, "
-            f"Ground truth total: {total}, "
-            f"Final score: {episode_score:.3f}"
+            f"Episode complete. Score: {episode_score:.3f}"
         ), episode_score
 
-    def _handle_add_note(self, payload: dict) -> str:
-        """Process an add-note action."""
+    def _handle_add_note(self, payload):
+
         note = payload.get("note", "")
+
         if note:
             self.state_manager.add_note(note)
-            return f"Note recorded: {note[:80]}{'...' if len(note) > 80 else ''}"
+            return f"Note recorded: {note[:80]}"
+
         return "Empty note ignored."
 
-    def _terminal_result(self, feedback: str) -> StepResult:
-        """Build a terminal StepResult when the episode is already done."""
+    def _terminal_result(self, feedback):
+
         episode_score = compute_episode_score(
             self.state_manager.findings,
             self.active_task.ground_truth,
             self.active_task.task_id,
             notes=self.state_manager.notes,
         )
+
         return StepResult(
             observation=Observation(
                 files=self.state_manager.get_visible_file_contents(),
@@ -268,24 +318,23 @@ class SecurityScannerEnv:
             done=True,
             info={
                 "episode_score": episode_score,
-                "step_reward_breakdown": {},
-                "grader_feedback": feedback,
-                "cumulative_reward": self.state_manager.cumulative_reward,
                 "findings_count": len(self.state_manager.findings),
                 "ground_truth_count": len(self.active_task.ground_truth),
             },
         )
 
     def _load_task(self, task_id: int):
-        """Load a task by ID."""
         if task_id == 1:
             from environment.tasks.task1_single_file import Task1SingleFile
             return Task1SingleFile()
+
         elif task_id == 2:
             from environment.tasks.task2_multifile import Task2MultiFile
             return Task2MultiFile()
+
         elif task_id == 3:
             from environment.tasks.task3_realworld import Task3RealWorld
             return Task3RealWorld()
+
         else:
-            raise ValueError(f"Invalid task_id: {task_id}. Must be 1, 2, or 3.")
+            raise ValueError("Invalid task_id")
