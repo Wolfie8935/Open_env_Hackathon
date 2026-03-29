@@ -15,6 +15,13 @@ from environment.models import (
 from environment.reward import compute_episode_score, compute_step_reward
 from environment.state_manager import StateManager
 
+from environment.security_analysis import (
+    build_dependency_graph,
+    run_static_analysis,
+    analyze_dataflows,
+    evaluate_exploitability,
+    detect_attack_chains
+)
 
 class SecurityScannerEnv:
     """OpenEnv-compatible security vulnerability scanner environment.
@@ -40,6 +47,29 @@ class SecurityScannerEnv:
         task = self._load_task(task_id)
         self.active_task = task
         self.state_manager.initialize(task)
+        try:
+            self._dependency_graph = build_dependency_graph(task.files)
+
+            self._static_results = run_static_analysis(task.files)
+
+            self._dataflow_results = analyze_dataflows(task.files)
+
+            self._exploitability_results = evaluate_exploitability(
+                self._static_results,
+                self._dataflow_results,
+            )
+
+            self._attack_chains = detect_attack_chains(
+                self._dependency_graph,
+                self._exploitability_results,
+            )
+        except Exception:
+            # Never break the environment if analysis fails
+            self._dependency_graph = {}
+            self._static_results = {}
+            self._dataflow_results = {}
+            self._exploitability_results = {}
+            self._attack_chains = []
         self._initialized = True
 
         return Observation(
