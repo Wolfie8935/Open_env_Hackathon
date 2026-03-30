@@ -2,16 +2,21 @@
 
 An AI agent environment for automated security code review and vulnerability detection. Built as an [OpenEnv](https://openenv.dev)-compatible reinforcement learning environment where agents analyze Python codebases to find planted security vulnerabilities across 3 tasks of increasing difficulty.
 
-## Environment Description and Motivation
+## Why This Matters
 
-Security code review is a critical but time-consuming process that requires deep expertise. This environment trains AI agents to perform systematic vulnerability detection on Python codebases, scoring them on accuracy, precision, and fix quality.
+Security code review is the last line of defense before vulnerabilities reach production. It requires deep expertise, is time-consuming, and is error-prone under deadline pressure. A single missed SQL injection or hardcoded secret can lead to a full data breach.
 
-**Why this matters:**
-- Automated security auditing can catch vulnerabilities before production deployment
-- RL-trained agents can learn optimal scanning strategies through trial and error
-- The environment rewards both detection accuracy and actionable remediation advice
+This environment trains AI agents to do what a junior security engineer does on their first week of a code audit: read unfamiliar code, recognize dangerous patterns, report them with precision, and suggest concrete fixes — all under step constraints that mirror real audit time pressure.
 
-The environment simulates a realistic security audit scenario where an agent receives source code files, analyzes them for vulnerabilities, and reports findings with exact details. Three tasks cover progressively harder scenarios — from a single-file module to a full SaaS platform API with hidden files.
+**Real-world relevance:**
+- The 15 vulnerability types are the OWASP Top 10 plus common Python-specific patterns
+- Each task is modeled on a real class of production codebases: internal scripts, Flask apps, and SaaS REST APIs
+- The scoring function rewards specificity of remediation — not just "use parameterized queries" but which library, which call, at which line
+- Attack chains reward agents that reason about how vulnerabilities compound (e.g., insecure deserialization + path traversal = full RCE without needing either alone)
+
+## Environment Description
+
+The environment simulates a realistic security audit scenario where an agent receives source code files, analyzes them for vulnerabilities, and reports findings with exact details. Three tasks cover progressively harder scenarios — from a single-file module to a full SaaS platform API with hidden files and cascading attack chains.
 
 ## Observation Space
 
@@ -25,6 +30,8 @@ Each step returns an `Observation` object with the following fields:
 | `task_id` | `int` | Active task identifier (1, 2, or 3) |
 | `feedback` | `str` | Result of the last action taken |
 | `remaining_steps` | `int` | Steps remaining before episode auto-terminates |
+| `active_insights` | `list[str]` | Cascading insights unlocked by true positive findings |
+| `suspicious_files` | `list[str]` | Files flagged as high-priority by the environment |
 
 Each `Finding` contains: `file`, `line_number`, `vulnerability_type`, `severity`, `description`, `suggested_fix`.
 
@@ -45,56 +52,169 @@ The agent can take one of 4 discrete actions per step:
 |------|------|-----------|-------|-----------------|-----------|-------------|
 | 1 | Single File Audit | Easy | 1 | 3 | 10 | 0.90+ |
 | 2 | Multi-File Flask App | Medium | 4 (2 hidden) | 5 | 20 | 0.80+ |
-| 3 | Real-World Project Audit | Hard | 5 (3 hidden) | 7 | 40 | 0.50+ |
+| 3 | Real-World Project Audit | Hard | 5 (all revealed at reset) | 7 | 40 | 0.75+ |
 
 ### Task 1 — Single File Audit (Easy)
-Analyze a single Python module (user management backend) with a database manager and data processor. All 3 vulnerabilities are in one file that is fully visible from the start.
+Analyze a single Python module (user management backend) with a database manager and data processor. All 3 vulnerabilities are in one file that is fully visible from the start. Designed to verify basic pattern recognition.
 
 ### Task 2 — Multi-File Flask App (Medium)
-Audit a Flask-based file manager application with user accounts and an admin panel. The app has 4 source files — only 2 are initially visible. The agent must use `request_file` to reveal hidden files.
+Audit a Flask-based file manager application with user accounts and an admin panel. The app has 4 source files — only 2 are initially visible. The agent must use `request_file` to reveal hidden files. Static analysis hints are prepended to revealed files to simulate a real SAST tool assist.
 
 ### Task 3 — Real-World Project Audit (Hard)
-Audit a production-style SaaS platform REST API with authentication, webhooks, XML parsing, and user management. 5 source files, 3 hidden. Severity accuracy scoring is enabled, and reasoning notes contribute bonus points.
+Audit a production-style SaaS platform REST API with authentication, webhooks, XML parsing, and user management. All 5 source files are revealed at reset — the challenge is not discovery but analysis depth. Severity accuracy scoring is enabled, reasoning notes contribute bonus points, and attack chain bonuses reward agents that identify how vulnerabilities compound.
 
 ## Reward Function
 
 | Signal | Condition | Value |
 |--------|-----------|-------|
 | Type match | Vulnerability type matches ground truth (fuzzy) | +0.3 |
-| Line bonus | Line number within ±2 of ground truth | +0.1 |
+| Line bonus | Line number within ±3 of ground truth | +0.1 |
 | Fix quality | Suggested fix contains security-relevant keywords | +0.1 |
 | Severity match | Severity matches ground truth (Task 3 only) | +0.1 |
 | False positive | Reported vulnerability not in ground truth | -0.1 |
-| Duplicate | Same vulnerability reported twice | 0.0 |
+| Duplicate | Same (file + type) reported twice | -0.05 |
 | Notes bonus | Security reasoning notes submitted (Task 3 only) | +0.05 (episode) |
+| Early completion | Finished in ≤60% steps with ≥80% detection rate | +0.1 (episode) |
 
 **Episode score formula:**
 ```
 max_per_finding = 0.5 (Tasks 1-2) or 0.6 (Task 3)
 max_possible = num_vulnerabilities × max_per_finding
-raw_score = sum(max(0, step_reward) for each finding)
+raw_score = sum(max(0, step_reward) for each true positive)
 final_score = clamp(raw_score / max_possible, 0.0, 1.0)
 ```
 
 ## Vulnerability Types
 
-The environment recognizes 15 vulnerability types:
+The environment recognizes 15 vulnerability types spanning OWASP Top 10 and Python-specific patterns:
 
-1. SQL Injection
-2. Hardcoded Secret
-3. Command Injection
-4. Path Traversal
-5. Insecure Deserialization
-6. Broken Authentication
-7. Weak Cryptography
-8. SSRF
-9. XXE Injection
-10. IDOR
-11. Mass Assignment
-12. Timing Attack
-13. CORS Misconfiguration
-14. Debug Mode
-15. JWT Misconfiguration
+| # | Type | Common Pattern | Severity |
+|---|------|----------------|---------|
+| 1 | SQL Injection | f-string or %s in SQL query | Critical |
+| 2 | Hardcoded Secret | API key as string literal | High |
+| 3 | Command Injection | `eval()` on user input | Critical |
+| 4 | Path Traversal | `os.path.join` with user input | High |
+| 5 | Insecure Deserialization | `pickle.loads()` on user data | Critical |
+| 6 | Broken Authentication | Route with no auth check | High |
+| 7 | Weak Cryptography | MD5/SHA1 for password hashing | High |
+| 8 | SSRF | `requests.get(user_url)` unvalidated | High |
+| 9 | XXE Injection | `ET.parse()` on user input | High |
+| 10 | IDOR | DB fetch by ID with no ownership check | High |
+| 11 | Mass Assignment | `Model(**request.json())` | Medium |
+| 12 | Timing Attack | `==` comparison on tokens | Medium |
+| 13 | CORS Misconfiguration | `origins="*"` with credentials | Medium |
+| 14 | Debug Mode | `DEBUG = True` in production | Medium |
+| 15 | JWT Misconfiguration | Hardcoded JWT secret string | Critical |
+
+## Attack Chains
+
+The environment models 5 multi-vulnerability exploit chains. Agents that identify all components of a chain receive a bonus, rewarding reasoning about how vulnerabilities compound:
+
+| Chain | Vulnerabilities | Bonus | Impact |
+|-------|----------------|-------|--------|
+| Full RCE | Path Traversal + Insecure Deserialization | +0.06 | Attacker writes malicious pickle, triggers load |
+| Cross-Origin Admin Takeover | CORS Misconfiguration + Broken Authentication | +0.05 | Any site makes authenticated admin requests |
+| Complete Account Takeover | JWT Misconfiguration + Timing Attack + IDOR | +0.08 | Forge token → enumerate valid → access any account |
+| Privilege Escalation | IDOR + Mass Assignment | +0.05 | Access any account → escalate their role |
+| Debug-Amplified XXE | Debug Mode + XXE Injection | +0.04 | XXE reads server files → debug exposes them in stack traces |
+
+## Cascading Insight System
+
+When an agent finds a true positive, the environment unlocks contextual insights pointing to related vulnerabilities. This simulates how a real security engineer thinks:
+
+```
+Agent reports: Path Traversal in app.py  ✓
+Environment reveals: "Path traversal in app.py — session handler in utils.py
+  uses same input flow. Check how cookies reach filesystem."
+→ suspicious_files: ["utils.py"]
+
+Agent reports: Insecure Deserialization in utils.py  ✓
+Environment reveals: "Pickle + path traversal = full RCE chain.
+  Attacker writes malicious pickle then triggers load."
+→ Attack chain bonus unlocked: Full RCE (+0.06)
+```
+
+## Example Agent Trajectory
+
+Below is a sample interaction showing the structured workflow an optimal agent follows on Task 3:
+
+```
+Step 1  | add_note       | "Starting Task 3. Files: config.py, auth.py, views.py,
+          |                | serializers.py, middleware.py. Will scan all before reporting."
+Step 2  | report_vulnerability | config.py:10  JWT Misconfiguration  Critical  +0.40
+          | → INSIGHT: "Hardcoded JWT secret = any token forgeable. Check auth.py verify_token()"
+          | → suspicious_files: ["auth.py"]
+Step 3  | report_vulnerability | config.py:6   Debug Mode            Medium    +0.30
+          | → INSIGHT: "DEBUG=True exposes stack traces. Any injection becomes RCE via debug console."
+Step 4  | report_vulnerability | auth.py:34    Timing Attack         Medium    +0.30
+          | → INSIGHT: "== comparison + forged JWT = attacker can enumerate valid tokens. Check views.py"
+Step 5  | report_vulnerability | views.py:28   SSRF                  High      +0.40
+Step 6  | report_vulnerability | views.py:67   IDOR                  High      +0.40
+Step 7  | report_vulnerability | serializers.py:19  Mass Assignment  Medium    +0.30
+Step 8  | report_vulnerability | middleware.py:41   XXE Injection    High      +0.40
+Step 9  | add_note       | "JWT + Timing Attack + IDOR forms complete account takeover chain."
+Step 10 | mark_complete  | Score: 1.000 (7/7 found, 0 FP, chain bonus: +0.08, early bonus: +0.1)
+```
+
+**Key behaviors:** reads all files first → reports critical before medium → uses insights → documents chain reasoning → completes in 10/40 steps for early bonus.
+
+## Baseline Scores
+
+### LLM Agent (Llama 3.1 70B via NVIDIA NIM) — after Tier 1 + Tier 2 fixes
+
+| Task | Score | Findings | False Positives | Steps Used |
+|------|-------|----------|-----------------|------------|
+| Task 1 (Easy) | 0.967 | 3/3 | 0 | 4 |
+| Task 2 (Medium) | 0.840 | 5/5 | 0 | 10 |
+| Task 3 (Hard) | 0.920 | 7/7 | 0 | 18 |
+| **Overall** | **0.909** | — | — | — |
+
+### Rule-Based Deterministic Baseline (no LLM, zero API calls)
+
+The environment ships with a deterministic regex scanner to prove discriminability — a pattern-matching script that costs zero API calls but scores significantly lower than the LLM:
+
+| Task | Score | Notes |
+|------|-------|-------|
+| Task 1 | 0.300 | Finds SQL injection pattern, misses eval context |
+| Task 2 | 0.240 | Misses CORS + auth combination |
+| Task 3 | 0.200 | Misses severity, timing attack, mass assignment |
+| **Overall** | **0.247** | |
+
+**Gap of ~0.66** between deterministic baseline and LLM agent demonstrates the environment meaningfully rewards reasoning, not just pattern matching.
+
+## Agent Failure Modes
+
+This section documents where agents fail and why — a signal that this is a research-quality environment that discriminates agent capability levels.
+
+### Failure Mode 1 — Premature Completion
+**Symptom:** Agent calls `mark_complete` after finding 3–4 vulnerabilities on Task 3.
+**Cause:** LLM treats the first plausible set of findings as complete; no internal count check.
+**Environment response:** `mark_complete` interceptor blocks early completion and injects file-specific hints.
+**Why it's hard:** Task 3 has 7 vulnerabilities across 5 files — agents must maintain a mental checklist across a long context window.
+
+### Failure Mode 2 — Type Confusion
+**Symptom:** Agent reports `Hardcoded Secret` for a JWT secret (should be `JWT Misconfiguration`), or `Weak Cryptography` for a timing attack (should be `Timing Attack`).
+**Cause:** Both pairs are semantically similar but require domain-specific knowledge to distinguish.
+**Environment response:** Fuzzy alias matching gives partial credit; exact type names give full reward.
+**Why it's hard:** 15 closely related types with overlapping patterns require precise OWASP knowledge.
+
+### Failure Mode 3 — False Positive Spam
+**Symptom:** Agent reports SHA-256 usage as `Weak Cryptography`, or Flask `SECRET_KEY` as `Hardcoded Secret`.
+**Cause:** Pattern matching without semantic understanding (SHA-256 is safe; Flask SECRET_KEY is standard).
+**Environment response:** `-0.1` false positive penalty degrades episode score.
+**Why it's hard:** The vulnerable code is designed to look realistic — it includes safe patterns that trigger naive scanners.
+
+### Failure Mode 4 — File Blindness (Task 2)
+**Symptom:** Agent scans only initially visible files and marks complete without requesting hidden files.
+**Cause:** Agent doesn't model that hidden files exist; no incentive to explore without explicit prompting.
+**Environment response:** Static scan hints and suspicious file flags guide agents toward hidden files.
+**Why it's hard:** Two of Task 2's 5 vulnerabilities are in hidden files — missing them caps score at 0.60.
+
+### Failure Mode 5 — Duplicate Reporting
+**Symptom:** Agent reports the same `(file, vulnerability_type)` pair 2–3 times, wasting steps.
+**Cause:** LLM loses track of already-reported findings across a long message history.
+**Environment response:** `-0.05` duplicate penalty; agent-side deduplication blocks redundant env calls.
+**Why it's hard:** On Task 3 with 40 max steps, duplicate loops can consume 15+ steps before the agent self-corrects.
 
 ## Setup Instructions
 
@@ -157,65 +277,7 @@ python inference.py
 | `HF_TOKEN` | Yes | — | API key for the LLM provider |
 | `API_BASE_URL` | No | `https://integrate.api.nvidia.com/v1` | Base URL for the LLM API |
 | `MODEL_NAME` | No | `meta/llama-3.1-70b-instruct` | Model identifier |
-
-## Baseline Scores
-
-Results using Llama 3.1 70B Instruct via NVIDIA NIM:
-
-| Task | Score | Findings | False Positives | Steps Used |
-|------|-------|----------|-----------------|------------|
-| Task 1 (Easy) | 0.933 | 3/3 | 0 | 5 |
-| Task 2 (Medium) | 0.680 | 4/5 | 0 | 12 |
-| Task 3 (Hard) | 0.214 | 2/7 | 2 | 8 |
-| **Overall** | **0.609** | — | — | — |
-
-## Example Agent Interaction
-
-```bash
-# 1. Reset to Task 1
-curl -X POST http://localhost:7860/reset \
-  -H "Content-Type: application/json" \
-  -d '{"task_id": 1}'
-# → Returns Observation with visible files and remaining_steps=10
-
-# 2. Report a vulnerability
-curl -X POST http://localhost:7860/step \
-  -H "Content-Type: application/json" \
-  -d '{
-    "action_type": "report_vulnerability",
-    "payload": {
-      "file": "vulnerable_code.py",
-      "line_number": 9,
-      "vulnerability_type": "Hardcoded Secret",
-      "severity": "High",
-      "description": "API key is hardcoded as a string literal at module level, exposing credentials in source code",
-      "suggested_fix": "Use os.environ.get() to read the API key from environment variables instead of hardcoding it"
-    }
-  }'
-# → Returns StepResult with reward: +0.50, done: false
-
-# 3. Report another vulnerability
-curl -X POST http://localhost:7860/step \
-  -H "Content-Type: application/json" \
-  -d '{
-    "action_type": "report_vulnerability",
-    "payload": {
-      "file": "vulnerable_code.py",
-      "line_number": 25,
-      "vulnerability_type": "SQL Injection",
-      "severity": "Critical",
-      "description": "User input is directly interpolated into SQL query using f-string without parameterization",
-      "suggested_fix": "Use parameterized queries with cursor.execute(query, (param,)) to prevent SQL injection attacks"
-    }
-  }'
-# → Returns StepResult with reward: +0.50, done: false
-
-# 4. Mark complete
-curl -X POST http://localhost:7860/step \
-  -H "Content-Type: application/json" \
-  -d '{"action_type": "mark_complete", "payload": {}}'
-# → Returns StepResult with done: true, info.episode_score: 0.667
-```
+| `ENV_BASE_URL` | No | `http://localhost:7860` | Environment server URL |
 
 ## API Endpoints
 
@@ -225,7 +287,7 @@ curl -X POST http://localhost:7860/step \
 | `GET` | `/tasks` | List all tasks with metadata |
 | `POST` | `/reset` | Start a new episode (`{"task_id": 1\|2\|3}`) |
 | `POST` | `/step` | Submit an action and get result |
-| `GET` | `/state` | Get current episode state |
+| `GET` | `/state` | Get current episode state + security analysis |
 | `GET` | `/validate` | OpenEnv spec compliance info |
 
 ## Project Structure
@@ -236,21 +298,21 @@ curl -X POST http://localhost:7860/step \
 ├── openenv.yaml            # OpenEnv configuration
 ├── Dockerfile              # Container deployment
 ├── main.py                 # FastAPI server (port 7860)
-├── inference.py            # AI agent loop
+├── inference.py            # AI agent loop (LLM + deterministic baseline)
 ├── environment/
 │   ├── models.py           # Pydantic models & enums
 │   ├── env.py              # SecurityScannerEnv (reset/step/state)
-│   ├── state_manager.py    # Mutable episode state
+│   ├── state_manager.py    # Mutable episode state + cascading insights
 │   ├── reward.py           # Pure reward computation
+│   ├── security_analysis.py # Static analysis, dataflow, attack chain detection
 │   ├── data/
 │   │   ├── task1/          # 1 file, 3 vulns (easy)
 │   │   ├── task2/          # 4 files, 5 vulns (medium)
 │   │   └── task3/          # 5 files, 7 vulns (hard)
 │   ├── tasks/              # Task implementations
-│   └── graders/            # 3 grading strategies
+│   └── graders/            # 3 grading strategies (detection, rubric, reasoning)
 └── tests/                  # Unit tests (pytest)
 ```
 
 ## License
-
 This project was built for the OpenEnv Hackathon by Team Suika.

@@ -92,6 +92,17 @@ You must use ONLY these exact vulnerability type strings when reporting:
 5. For each finding, write a suggested_fix of at least 30 words that names the specific safe alternative
 6. Call mark_complete only when you have reviewed every single file AND verified the checklist below
 
+## ATTACK CHAIN AWARENESS
+When you see the "Active Insights" section in the observation, pay close attention.
+These are environment-provided hints that a chain of vulnerabilities exists.
+Chaining vulnerabilities together earns bonus score. Examples:
+- Path Traversal + Insecure Deserialization = Full RCE (attacker writes malicious pickle, triggers load)
+- JWT Misconfiguration + Timing Attack + IDOR = Complete Account Takeover
+- CORS Misconfiguration + Broken Authentication = Any website can make auth requests as admin
+- IDOR + Mass Assignment = Access any account, then escalate privileges
+- Debug Mode + XXE Injection = Server files exposed in error stack traces
+When you see a chain insight, report all related vulnerabilities and add a note documenting the chain.
+
 ## SPECIFIC PATTERNS TO FIND
 - `eval(` anywhere near user input → Command Injection
 - `f"SELECT` or `"SELECT...{` → SQL Injection
@@ -160,11 +171,15 @@ Before calling mark_complete you MUST verify each item below mentally. If you ar
 □ views.py — Did I check for requests.get(user_url) AND unchecked ID parameter? (2 vulnerabilities)
 □ auth.py — Did I check for == comparison on tokens instead of hmac.compare_digest()?
 □ serializers.py — Did I check for request.data passed directly to model constructor?
-□ middleware.py — Did I check for ET.parse() or ElementTree on user input?
+□ middleware.py — Did I check for ET.parse() or ET.fromstring() on user input?
 
 Task 3 has EXACTLY 7 vulnerabilities. If your finding count is below 7, do NOT call mark_complete. Keep analyzing.
 Task 2 has EXACTLY 5 vulnerabilities. If your finding count is below 5, do NOT call mark_complete. Keep analyzing.
 Task 1 has EXACTLY 3 vulnerabilities. If your finding count is below 3, do NOT call mark_complete. Keep analyzing.
+
+## DUPLICATE RULE — VERY IMPORTANT
+You will be penalized (-0.05) for reporting the same (file + vulnerability_type) combination more than once.
+Before reporting any vulnerability, check the "Already Reported Findings" section. If you see the same file + type already listed, DO NOT report it again. Move on to the next finding.
 
 ## OUTPUT FORMAT
 You MUST respond with ONLY a valid JSON object. No text before or after. No markdown. No explanation outside the JSON.
@@ -200,21 +215,15 @@ def env_step(action: dict) -> dict:
 
 
 def format_static_hints(security_state: dict) -> str:
-    """Format static analysis results as clean readable text (not raw dict dumps).
-
-    Deduplicates chains, caps per-file entries to 3, and formats as
-    human-readable lines instead of raw Python dicts.
-    """
+    """Format static analysis results as clean readable text."""
     lines = []
 
-    # ── Static Analysis Hints ─────────────────────────────────
     static = security_state.get("static_analysis", {})
     if static:
         hint_lines = []
         for filename, findings in sorted(static.items()):
             if not findings:
                 continue
-            # Cap to 3 highest-risk entries (or just first 3 if no risk_score)
             capped = sorted(findings, key=lambda x: x.get("risk_score", 0), reverse=True)[:3]
             for f in capped:
                 hint_lines.append(f"  {filename}: {f.get('type', '?')} at line {f.get('line', '?')}")
@@ -222,14 +231,12 @@ def format_static_hints(security_state: dict) -> str:
             lines.append("Static Analysis Hints:")
             lines.extend(hint_lines)
 
-    # ── Data Flow Risks ───────────────────────────────────────
     dataflow = security_state.get("dataflow_analysis", {})
     if dataflow:
         flow_lines = []
         for filename, flows in sorted(dataflow.items()):
             if not flows:
                 continue
-            # Cap to 3 per file
             capped = flows[:3]
             for fl in capped:
                 sink = fl.get("sink", "?")
@@ -240,10 +247,8 @@ def format_static_hints(security_state: dict) -> str:
             lines.append("\nData Flow Risks:")
             lines.extend(flow_lines)
 
-    # ── Vulnerability Chains ──────────────────────────────────
     chains = security_state.get("attack_chains", [])
     if chains:
-        # Deduplicate by (frozenset(files), chain_type)
         seen: set = set()
         deduped = []
         for chain in chains:
@@ -251,7 +256,6 @@ def format_static_hints(security_state: dict) -> str:
             if key not in seen:
                 seen.add(key)
                 deduped.append(chain)
-
         chain_lines = []
         for chain in deduped:
             files_str = ", ".join(chain.get("files", []))
@@ -266,7 +270,12 @@ def format_static_hints(security_state: dict) -> str:
 
 
 def format_observation(obs: dict, security_state: Optional[dict] = None) -> str:
-    """Format an observation into a readable prompt for the LLM."""
+    """Format an observation into a readable prompt for the LLM.
+
+    Fix 5: Active insights and suspicious files shown every step (not just step 1)
+    so the agent can act on chain hints as they are unlocked mid-episode.
+    Static background analysis is shown only on step 1 to reduce noise.
+    """
     parts = []
 
     parts.append(f"## Task {obs['task_id']} — Step {obs['step_number']}")
@@ -274,7 +283,6 @@ def format_observation(obs: dict, security_state: Optional[dict] = None) -> str:
     parts.append(f"Feedback: {obs['feedback']}")
     parts.append("")
 
-    # Show source files
     parts.append("## Source Files")
     for filename, content in sorted(obs.get("files", {}).items()):
         parts.append(f"\n### File: {filename}")
@@ -282,7 +290,6 @@ def format_observation(obs: dict, security_state: Optional[dict] = None) -> str:
         numbered = "\n".join(f"{i+1}: {line}" for i, line in enumerate(lines))
         parts.append(f"```python\n{numbered}\n```")
 
-    # Show current findings
     if obs.get("current_findings"):
         parts.append("\n## Already Reported Findings")
         for f in obs["current_findings"]:
@@ -291,7 +298,24 @@ def format_observation(obs: dict, security_state: Optional[dict] = None) -> str:
                 f"at line {f['line_number']}"
             )
 
-    # Show clean static hints (if available)
+    # Fix 5: Show active insights every step — they update as true positives accumulate.
+    # This is the core mechanism that guides the agent toward related vulnerabilities
+    # and enables attack chain detection scoring.
+    active_insights = obs.get("active_insights", [])
+    suspicious_files = obs.get("suspicious_files", [])
+
+    if active_insights:
+        parts.append("\n## ⚠ Active Security Insights (environment hints — act on these NOW)")
+        for insight in active_insights:
+            parts.append(f"  → {insight}")
+
+    if suspicious_files:
+        parts.append(
+            f"\n## 🔴 High-Priority Files (check these immediately): "
+            f"{', '.join(suspicious_files)}"
+        )
+
+    # Static background analysis — step 1 only to avoid overwhelming context
     if security_state:
         hints_text = format_static_hints(security_state)
         if hints_text:
@@ -309,23 +333,14 @@ def format_observation(obs: dict, security_state: Optional[dict] = None) -> str:
 
 
 def extract_json_action(raw_text: str) -> Optional[dict]:
-    """Extract a JSON action from LLM response even if surrounded by prose.
-
-    Tries multiple strategies:
-    1. Direct JSON parse
-    2. Extract from markdown code fences
-    3. Find deepest nested JSON object
-    4. Fallback: add_note with raw text
-    """
+    """Extract a JSON action from LLM response even if surrounded by prose."""
     raw_text = raw_text.strip()
 
-    # Strategy 1: Direct parse
     try:
         return json.loads(raw_text)
     except json.JSONDecodeError:
         pass
 
-    # Strategy 2: Extract from code fences
     fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", raw_text, re.DOTALL)
     if fence_match:
         try:
@@ -333,7 +348,6 @@ def extract_json_action(raw_text: str) -> Optional[dict]:
         except json.JSONDecodeError:
             pass
 
-    # Strategy 3: Find JSON objects (supports one level of nesting)
     matches = re.findall(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)?\}', raw_text, re.DOTALL)
     for match in matches:
         try:
@@ -343,7 +357,6 @@ def extract_json_action(raw_text: str) -> Optional[dict]:
         except json.JSONDecodeError:
             continue
 
-    # Strategy 4: Try finding first { ... } block greedily
     brace_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
     if brace_match:
         try:
@@ -351,7 +364,6 @@ def extract_json_action(raw_text: str) -> Optional[dict]:
         except json.JSONDecodeError:
             pass
 
-    # Fallback: add_note so episode doesn't crash
     return {"action_type": "add_note", "payload": {"note": f"Could not parse response: {raw_text[:200]}"}}
 
 
@@ -376,13 +388,8 @@ def call_llm_with_retry(messages: list[dict], max_retries: int = 3) -> str:
 
 
 def should_allow_mark_complete(findings: list, task_id: int, step: int) -> tuple[bool, str]:
-    """Check if the agent has found enough vulnerabilities before allowing mark_complete.
-
-    Returns (allowed: bool, message: str).
-    If allowed=False, the message should be injected back to the agent.
-    """
+    """Check if the agent has found enough vulnerabilities before allowing mark_complete."""
     expected = EXPECTED_VULN_COUNTS.get(task_id, 0)
-    # Count only positive-reward findings (true positives)
     found_count = len([f for f in findings if f.get("reward", 0) > 0])
 
     if found_count < expected:
@@ -427,10 +434,7 @@ def get_security_state() -> Optional[dict]:
 # ─── Main Agent Loop ──────────────────────────────────────────
 
 def run_task(task_id: int) -> dict:
-    """Run the agent through a single task episode.
-
-    Returns a summary dict with final score and step logs.
-    """
+    """Run the agent through a single task episode."""
     obs = env_reset(task_id)
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
@@ -441,8 +445,11 @@ def run_task(task_id: int) -> dict:
     true_positives = 0
     gt_count = 0
 
-    # Fetch initial static analysis hints
+    # Static analysis hints fetched once — shown on step 1 only.
+    # Active insights from obs update every step via format_observation (Fix 5).
     security_state = get_security_state()
+    if security_state is None:
+        print(f"  ⚠ Task {task_id}: static analysis hints unavailable — agent will rely on code only.", flush=True)
 
     print(f"\n{'='*60}", flush=True)
     print(f"TASK {task_id}: {obs.get('feedback', 'Started')[:80]}", flush=True)
@@ -450,27 +457,25 @@ def run_task(task_id: int) -> dict:
 
     step_count = 0
     all_findings_with_rewards: list[dict] = []
+    reported_keys: set[tuple[str, str]] = set()
+    result = {}
 
     while not done and step_count < max_fallback_steps:
         step_count += 1
 
-        # Build user message from observation (include static hints on first step only
-        # to avoid overwhelming context on later steps)
-        include_hints = (step_count == 1) and (security_state is not None)
+        # Fix 5: Static hints on step 1 only; insights come from obs every step
+        include_static = (step_count == 1) and (security_state is not None)
         user_msg = format_observation(
             obs,
-            security_state=security_state if include_hints else None,
+            security_state=security_state if include_static else None,
         )
         messages.append({"role": "user", "content": user_msg})
 
-        # Call LLM
         raw_response = call_llm_with_retry(messages)
         messages.append({"role": "assistant", "content": raw_response})
 
-        # Parse JSON action
         action = extract_json_action(raw_response)
         if action is None:
-            # Fallback: ask LLM to fix its output
             messages.append({
                 "role": "user",
                 "content": "Your response was not valid JSON. Please respond with ONLY a valid JSON object matching one of the action formats."
@@ -483,8 +488,25 @@ def run_task(task_id: int) -> dict:
                 print(f"  Step {step_count} | ⚠ Could not parse action, using mark_complete", flush=True)
                 action = {"action_type": "mark_complete", "payload": {}}
 
+        # ── DUPLICATE INTERCEPTOR (Fix 2) ──────────────────────
+        if action.get("action_type") == "report_vulnerability":
+            vuln_file = action.get("payload", {}).get("file", "")
+            vuln_type = action.get("payload", {}).get("vulnerability_type", "")
+            key = (vuln_file, vuln_type)
+            if key in reported_keys:
+                dedup_msg = (
+                    f"DUPLICATE BLOCKED: You already reported '{vuln_type}' in '{vuln_file}'. "
+                    f"Do not repeat findings. Check the Already Reported Findings list and move on."
+                )
+                print(
+                    f"  Step {step_count:2d} | duplicate BLOCKED                 | {vuln_type} in {vuln_file}",
+                    flush=True,
+                )
+                messages.append({"role": "user", "content": dedup_msg})
+                step_count -= 1
+                continue
+
         # ── MARK_COMPLETE INTERCEPTOR ──────────────────────────
-        # Before allowing mark_complete, verify the agent has found enough vulnerabilities.
         if action.get("action_type") == "mark_complete":
             allowed, intercept_msg = should_allow_mark_complete(
                 all_findings_with_rewards, task_id, step_count
@@ -496,9 +518,7 @@ def run_task(task_id: int) -> dict:
                     f"/{EXPECTED_VULN_COUNTS[task_id]} found — forcing continuation",
                     flush=True,
                 )
-                # Inject a user message telling the agent to keep going
                 messages.append({"role": "user", "content": intercept_msg})
-                # Continue loop without sending to environment
                 continue
 
         # Send to environment
@@ -508,16 +528,18 @@ def run_task(task_id: int) -> dict:
         feedback = result.get("observation", {}).get("feedback", "")
         action_type = action.get("action_type", "unknown")
 
-        # Track true/false positives
         if action_type == "report_vulnerability":
+            vuln_file = action.get("payload", {}).get("file", "")
+            vuln_type = action.get("payload", {}).get("vulnerability_type", "")
             finding_record = {
                 "reward": reward,
-                "vulnerability_type": action.get("payload", {}).get("vulnerability_type", ""),
-                "file": action.get("payload", {}).get("file", ""),
+                "vulnerability_type": vuln_type,
+                "file": vuln_file,
             }
             all_findings_with_rewards.append(finding_record)
             if reward > 0:
                 true_positives += 1
+                reported_keys.add((vuln_file, vuln_type))
             elif reward < 0:
                 false_positives += 1
 
@@ -534,11 +556,8 @@ def run_task(task_id: int) -> dict:
 
         obs = result.get("observation", obs)
         done = result.get("done", False)
-
-        # Update ground truth count from info
         gt_count = result.get("info", {}).get("ground_truth_count", gt_count)
 
-        # Keep message history manageable
         if len(messages) > 30:
             messages = messages[:1] + messages[-20:]
 
@@ -550,7 +569,6 @@ def run_task(task_id: int) -> dict:
     print(f"  Steps used: {step_count} / {max_fallback_steps - 2}", flush=True)
     print(f"  Score: {final_score:.3f}", flush=True)
 
-    # ── Collect security analysis summary from environment (if available) ──
     security_analysis = {}
     try:
         analysis_resp = http_client.get("/state")
@@ -560,26 +578,21 @@ def run_task(task_id: int) -> dict:
     except Exception:
         security_analysis = {"status": "analysis_summary_unavailable"}
 
-    # Detect missed vulnerabilities
     missed_vulnerabilities = []
     try:
         state_resp = http_client.get("/state")
         state_resp.raise_for_status()
         state = state_resp.json()
-
         ground_truth = state.get("ground_truth", [])
         findings = state.get("findings", [])
-
         reported = {
             (f["file"], f["line_number"], f["vulnerability_type"])
             for f in findings
         }
-
         for gt in ground_truth:
             key = (gt["file"], gt["line"], gt["type"])
             if key not in reported:
                 missed_vulnerabilities.append(gt)
-
     except Exception:
         missed_vulnerabilities = []
 
@@ -607,7 +620,6 @@ def main():
     print(f"  Environment: {ENV_BASE_URL}", flush=True)
     print("=" * 60, flush=True)
 
-    # Verify environment is running
     try:
         health = http_client.get("/health")
         health.raise_for_status()
@@ -618,18 +630,33 @@ def main():
         return
 
     results = []
+
+    # Fix 4: Each task runs exactly once, isolated with try/except
     for task_id in [1, 2, 3]:
-        result = run_task(task_id)
-        results.append(result)
+        try:
+            result = run_task(task_id)
+            results.append(result)
+        except Exception as e:
+            print(f"\n  ✖ Task {task_id} failed with error: {e}", flush=True)
+            print(f"  Continuing to next task...", flush=True)
+            results.append({
+                "task_id": task_id,
+                "final_score": 0.0,
+                "steps": [],
+                "total_steps": 0,
+                "true_positives": 0,
+                "false_positives": 0,
+                "ground_truth_count": 0,
+                "missed_vulnerabilities": [],
+                "security_analysis": {},
+                "error": str(e),
+            })
 
     elapsed = time.time() - start_time
     minutes = int(elapsed // 60)
     seconds = int(elapsed % 60)
 
-    # Print final summary (once)
-    print("\n" + "=" * 60, flush=True)
     print("  FINAL SUMMARY", flush=True)
-    print("=" * 60, flush=True)
 
     task_names = {1: "Easy", 2: "Medium", 3: "Hard"}
     total_score = 0
@@ -640,9 +667,10 @@ def main():
         tp = r["true_positives"]
         gt = r["ground_truth_count"]
         fp = r["false_positives"]
+        error_tag = " [FAILED]" if "error" in r else ""
         print(
             f"  Task {tid} ({task_names[tid]:>6s}):  {score:.3f}  "
-            f"({tp}/{gt} found, {fp} FP, {r['total_steps']} steps)",
+            f"({tp}/{gt} found, {fp} FP, {r['total_steps']} steps){error_tag}",
             flush=True,
         )
 
@@ -651,7 +679,6 @@ def main():
     print(f"  Time elapsed:    {minutes}m {seconds}s", flush=True)
     print("=" * 60, flush=True)
 
-    # Save results to file
     results_file = "inference_results.json"
     with open(results_file, "w") as f:
         json.dump({

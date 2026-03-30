@@ -5,13 +5,16 @@ Counts correct type+file matches, adds line bonus, subtracts false positive pena
 
 from environment.graders.base_grader import BaseGrader
 from environment.models import Finding
-from environment.reward import normalize_vuln_type, _types_match
+from environment.reward import normalize_vuln_type, _types_match, LINE_TOLERANCE
 
 
 class Grader1(BaseGrader):
     """Detection accuracy grader.
 
     Score = (correct_count / total_gt) + (line_bonus_weight) - fp_penalty
+
+    Fix 7: Line tolerance standardized to ±3 (was ±1 — too strict,
+    penalized agents who found the right vulnerability at line 26 vs GT 25).
     """
 
     def grade(self, findings: list[Finding], ground_truth: list[dict]) -> float:
@@ -29,7 +32,8 @@ class Grader1(BaseGrader):
                 if _types_match(finding.vulnerability_type, gt["type"]) and finding.file == gt["file"]:
                     correct_count += 1
                     matched_gt_indices.add(i)
-                    if abs(finding.line_number - gt["line"]) <= 1:
+                    # Fix 7: was ±1, now ±3 to match reward.py and grader2/3
+                    if abs(finding.line_number - gt["line"]) <= LINE_TOLERANCE:
                         line_bonus += 0.5
                     break
 

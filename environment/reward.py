@@ -6,10 +6,7 @@ No state, no side effects — same inputs always produce same outputs.
 
 from environment.models import Finding
 
-
-# ─── Type Alias Map ───────────────────────────────────────────
-# Maps common LLM type misnamings to the ground-truth canonical names.
-# Only used when file ALSO matches — wrong file + alias = still false positive.
+#Type Alias Map
 TYPE_ALIASES: dict[str, list[str]] = {
     "hardcoded secret": [
         "hardcoded secret", "jwt misconfiguration", "jwt secret hardcoded",
@@ -73,14 +70,12 @@ TYPE_ALIASES: dict[str, list[str]] = {
     ],
 }
 
-
 def normalize_vuln_type(raw: str) -> str:
     """Normalize a vulnerability type string for comparison.
 
     Lowercases, replaces underscores/hyphens with spaces, and strips whitespace.
     """
     return raw.lower().replace("_", " ").replace("-", " ").strip()
-
 
 def _types_match(finding_type: str, gt_type: str) -> bool:
     """Check if a finding type matches a ground truth type.
@@ -100,7 +95,6 @@ def _types_match(finding_type: str, gt_type: str) -> bool:
         return True
 
     return False
-
 
 def find_matching_ground_truth(
     finding: Finding, ground_truth: list[dict]
@@ -123,8 +117,7 @@ def find_matching_ground_truth(
 
     return None
 
-
-# ─── Fix Quality Keywords ─────────────────────────────────────
+#Fix Quality Keywords
 FIX_KEYWORDS = [
     "parameter", "parameterized", "environ", "environment variable",
     "sanitize", "sanitiz", "whitelist", "allowlist", "validate",
@@ -137,21 +130,18 @@ FIX_KEYWORDS = [
     "subprocess", "shlex", "quote",
 ]
 
-
 def _has_fix_quality(suggested_fix: str) -> bool:
     """Check if a suggested fix contains meaningful security keywords."""
     fix_lower = suggested_fix.lower()
     return any(kw in fix_lower for kw in FIX_KEYWORDS)
 
-
-# ─── Notes Quality ────────────────────────────────────────────
+#Notes Quality
 NOTES_SECURITY_KEYWORDS = [
     "attack", "vulnerability", "vulnerabilities", "exploit", "risk",
     "impact", "threat", "injection", "bypass", "unauthorized",
     "authentication", "authorization", "sensitive", "exposure",
     "traversal", "deserialization", "hardcoded", "secret",
 ]
-
 
 def compute_notes_bonus(notes: list[str]) -> float:
     """Compute a bonus for security-relevant analysis notes.
@@ -169,6 +159,8 @@ def compute_notes_bonus(notes: list[str]) -> float:
 
     return 0.0
 
+#Line Tolerance
+LINE_TOLERANCE = 3
 
 def compute_step_reward(
     finding: Finding,
@@ -182,11 +174,11 @@ def compute_step_reward(
 
     Reward components:
         True positive base:      +0.3
-        Line within ±2:          +0.1
+        Line within ±3:          +0.1   (Fix 7: was ±2, now ±3 for consistency)
         Fix quality keywords:    +0.1
         Severity match (task 3): +0.1
         False positive:          -0.1
-        Duplicate:                0.0
+        Duplicate:                0.0   (env.py overrides this to -0.05)
     """
     breakdown = {
         "type_match": 0.0,
@@ -218,8 +210,8 @@ def compute_step_reward(
     breakdown["type_match"] = 0.3
     reward = 0.3
 
-    # Line number bonus (within ±2 of ground truth)
-    if abs(finding.line_number - match["line"]) <= 2:
+    # Fix 7: Line number bonus — standardized to ±3 (was ±2)
+    if abs(finding.line_number - match["line"]) <= LINE_TOLERANCE:
         breakdown["line_bonus"] = 0.1
         reward += 0.1
 
@@ -238,18 +230,23 @@ def compute_step_reward(
 
     return reward, breakdown
 
-
 def compute_episode_score(
     findings: list[Finding],
     ground_truth: list[dict],
     task_id: int,
     notes: list[str] | None = None,
+    steps_used: int | None = None,
+    max_steps: int | None = None,
 ) -> float:
     """Compute the final normalized score for a complete episode.
 
     max_possible = len(ground_truth) * max_per_finding
     raw = sum of per-finding rewards (each clamped at 0)
     score = clamp(raw / max_possible, 0.0, 1.0)
+
+    Early completion bonus (+0.1) awarded when agent finishes
+    in ≤60% of max_steps AND achieves ≥80% true positive rate.
+    Encourages efficient, precise scanning over step-burning.
     """
     if not ground_truth:
         return 0.0
@@ -259,16 +256,29 @@ def compute_episode_score(
 
     total_reward = 0.0
     seen_findings: list[Finding] = []
+    true_positive_count = 0
 
     for finding in findings:
         step_reward, _ = compute_step_reward(
             finding, ground_truth, task_id, seen_findings
         )
         total_reward += max(0.0, step_reward)
+        if step_reward > 0:
+            true_positive_count += 1
         seen_findings.append(finding)
 
     # Notes quality bonus for Task 3
     if task_id == 3 and notes:
         total_reward += compute_notes_bonus(notes)
+
+    if (
+        steps_used is not None
+        and max_steps is not None
+        and max_steps > 0
+        and steps_used <= max_steps * 0.6
+        and len(ground_truth) > 0
+        and true_positive_count / len(ground_truth) >= 0.80
+    ):
+        total_reward += 0.1
 
     return max(0.0, min(1.0, total_reward / max_possible))

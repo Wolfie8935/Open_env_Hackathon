@@ -23,6 +23,8 @@ from environment.security_analysis import (
     detect_attack_chains,
 )
 
+DUPLICATE_PENALTY = -0.05
+
 class SecurityScannerEnv:
     """OpenEnv-compatible security vulnerability scanner environment."""
 
@@ -46,18 +48,13 @@ class SecurityScannerEnv:
         self.state_manager.initialize(task)
 
         try:
-
             self._dependency_graph = build_dependency_graph(task.files)
-
             self._static_results = run_static_analysis(task.files)
-
             self._dataflow_results = analyze_dataflows(task.files)
-
             self._exploitability_results = evaluate_exploitability(
                 self._static_results,
                 self._dataflow_results,
             )
-
             self._attack_chains = detect_attack_chains(
                 self._dependency_graph,
                 self._exploitability_results,
@@ -70,11 +67,9 @@ class SecurityScannerEnv:
             self._exploitability_results = {}
             self._attack_chains = []
 
-        # DEBUG OUTPUT
-        print("STATIC:", self._static_results)
-        print("DATAFLOW:", self._dataflow_results)
-        print("EXPLOIT:", self._exploitability_results)
-        print("CHAINS:", self._attack_chains)
+        if task_id == 3:
+            for filename in list(task.files.keys()):
+                self.state_manager.reveal_file(filename)
 
         self._initialized = True
 
@@ -181,7 +176,7 @@ class SecurityScannerEnv:
                 "type": gt.get("vulnerability_type") or gt.get("type"),
             }
             for gt in self.active_task.ground_truth
-    ]
+        ]
 
         state["security_analysis"] = self.get_security_analysis_summary()
 
@@ -243,6 +238,20 @@ class SecurityScannerEnv:
             self.state_manager.findings,
         )
 
+        is_duplicate = any(
+            f.file == finding.file and f.vulnerability_type == finding.vulnerability_type
+            for f in self.state_manager.findings
+        )
+        if is_duplicate and reward == 0.0:
+            reward = DUPLICATE_PENALTY
+            breakdown["duplicate_penalty"] = DUPLICATE_PENALTY
+            feedback = (
+                f"DUPLICATE — already reported {finding.vulnerability_type} in "
+                f"{finding.file}. Penalty: {DUPLICATE_PENALTY}. Do not repeat findings."
+            )
+            # Do NOT add duplicate to findings list
+            return reward, feedback, breakdown
+
         self.state_manager.add_finding(finding)
 
         if reward > 0:
@@ -258,7 +267,7 @@ class SecurityScannerEnv:
         elif reward < 0:
             feedback = f"False positive: {finding.vulnerability_type}"
         else:
-            feedback = f"Duplicate finding: {finding.vulnerability_type}"
+            feedback = f"Finding noted (partial match): {finding.vulnerability_type}"
 
         return reward, feedback, breakdown
 

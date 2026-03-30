@@ -5,7 +5,7 @@ Per-entry scoring: 0.60 for type+file, +0.20 for line proximity, +0.20 for fix q
 
 from environment.graders.base_grader import BaseGrader
 from environment.models import Finding
-from environment.reward import normalize_vuln_type, _types_match, _has_fix_quality
+from environment.reward import normalize_vuln_type, _types_match, _has_fix_quality, LINE_TOLERANCE
 
 
 class Grader2(BaseGrader):
@@ -13,7 +13,7 @@ class Grader2(BaseGrader):
 
     Each GT entry can earn up to 1.0 points:
         - type + file match:    0.60
-        - line within ±3:       0.20
+        - line within ±3:       0.20   (Fix 7: now uses shared LINE_TOLERANCE constant)
         - fix text quality:     0.20
     """
 
@@ -37,7 +37,8 @@ class Grader2(BaseGrader):
 
                 score = 0.60  # base for type + file match
 
-                if abs(finding.line_number - gt["line"]) <= 3:
+                # Fix 7: uses shared LINE_TOLERANCE constant (±3)
+                if abs(finding.line_number - gt["line"]) <= LINE_TOLERANCE:
                     score += 0.20
 
                 if _has_fix_quality(finding.suggested_fix):
