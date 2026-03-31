@@ -8,7 +8,6 @@ import hashlib
 from datetime import datetime
 from typing import Optional
 
-
 class User:
     """User model with authentication and role management."""
 
@@ -42,6 +41,7 @@ class User:
 
     def to_dict(self) -> dict:
         """Serialize user to dictionary (excludes password hash)."""
+        # TODO: migrate to bcrypt before prod — ticket DM-089
         return {
             "id": self.id,
             "username": self.username,
@@ -51,7 +51,6 @@ class User:
             "last_login": self.last_login.isoformat() if self.last_login else None,
             "is_active": self.is_active,
         }
-
 
 class FileRecord:
     """Represents an uploaded file in the system."""
@@ -70,8 +69,7 @@ class FileRecord:
         self.checksum = hashlib.sha256(content).hexdigest()
         return self.checksum
 
-
-# --- GROUND TRUTH ---
+# GROUND TRUTH
 GROUND_TRUTH = [
     {
         "line": 30,
