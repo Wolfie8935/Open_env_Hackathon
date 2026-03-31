@@ -1,8 +1,14 @@
 name: security-vulnerability-scanner
 version: "1.0.0"
-description: "AI agent environment for security code review and vulnerability detection"
+description: "OpenEnv environment where an AI agent acts as a security code auditor, scanning Python codebases to identify, classify, and fix security vulnerabilities across three tasks of increasing difficulty."
 author: "Team Suika"
-tags: ["security", "code-review", "vulnerability-detection", "cybersecurity"]
+license: "MIT"
+tags:
+  - security
+  - code-review
+  - vulnerability-detection
+  - cybersecurity
+  - static-analysis
 
 tasks:
   - id: 1
@@ -10,18 +16,19 @@ tasks:
     difficulty: easy
     max_steps: 10
     num_vulnerabilities: 3
-
+    description: "Scan a single Python file containing 3 planted vulnerabilities. All code visible from step 1."
   - id: 2
     name: "Multi-File Flask App"
     difficulty: medium
     max_steps: 20
     num_vulnerabilities: 5
-
+    description: "Audit a Flask web application across 4 files. 2 files hidden — must use request_file action."
   - id: 3
     name: "Real-World Project Audit"
     difficulty: hard
     max_steps: 40
     num_vulnerabilities: 7
+    description: "Audit a production-style API across 5 files with 7 vulnerabilities. Reasoning quality is scored."
 
 observation_space:
   type: structured
@@ -34,32 +41,69 @@ observation_space:
       description: "All vulnerabilities reported so far this episode"
     - name: step_number
       type: int
-      description: "Current step count"
+      description: "Current step count (0-indexed)"
     - name: task_id
       type: int
-      description: "Active task identifier (1, 2, or 3)"
+      description: "Active task identifier: 1, 2, or 3"
     - name: feedback
       type: str
-      description: "Result of the last action taken"
+      description: "Result of the last action including any unlocked insights"
     - name: remaining_steps
       type: int
       description: "Steps remaining before episode auto-terminates"
+    - name: active_insights
+      type: "list[str]"
+      description: "Cascading insights unlocked by correctly identifying prior vulnerabilities"
+    - name: suspicious_files
+      type: "list[str]"
+      description: "Files flagged as suspicious based on discoveries so far"
 
 action_space:
   type: discrete
   actions:
     - name: report_vulnerability
-      description: "Report a found vulnerability with type, line, severity, and fix"
+      description: "Report a found vulnerability with type, line number, severity, description, and fix"
+      parameters:
+        - name: file
+          type: str
+          required: true
+        - name: line_number
+          type: int
+          required: true
+        - name: vulnerability_type
+          type: str
+          required: true
+        - name: severity
+          type: str
+          required: true
+        - name: description
+          type: str
+          required: true
+        - name: suggested_fix
+          type: str
+          required: true
     - name: request_file
-      description: "Request to see a hidden file"
+      description: "Request to see a hidden file (Tasks 2 and 3)"
+      parameters:
+        - name: filename
+          type: str
+          required: true
     - name: mark_complete
-      description: "Signal that the scan is complete"
+      description: "Signal that the vulnerability scan is complete"
+      parameters: []
     - name: add_note
-      description: "Add a reasoning note (graded in Task 3)"
-
-entry_point: "main:app"
+      description: "Add a reasoning note — graded for quality in Task 3"
+      parameters:
+        - name: note
+          type: str
+          required: true
 
 reward:
   min: -0.5
-  max: 0.6
-  description: "Per-step reward: +0.3 type match, +0.1 line bonus, +0.1 fix quality, +0.1 severity (T3), -0.1 false positive"
+  max: 1.0
+  description: "Per-step: +0.3 type match, +0.1 line bonus (±2), +0.1 fix quality, +0.1 severity (T3). Episode: chain bonuses up to +0.15. Penalty: -0.1 per false positive."
+
+entry_point: "main:app"
+runtime:
+  python: "3.11"
+  port: 7860

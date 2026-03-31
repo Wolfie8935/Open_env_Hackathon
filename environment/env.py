@@ -133,6 +133,8 @@ class SecurityScannerEnv:
             self.active_task.ground_truth,
             self.active_task.task_id,
             notes=self.state_manager.notes,
+            current_step=self.state_manager.step_number,
+            max_steps=self.active_task.max_steps,
         )
 
         clamped_reward = max(-0.5, min(0.6, reward))
@@ -294,17 +296,19 @@ class SecurityScannerEnv:
 
         self.state_manager.is_complete = True
 
-        base_score = compute_episode_score(
+        # Fix 1: chain bonus passed into episode score directly
+        chain_bonus, chains = self.state_manager.compute_chain_bonuses()
+        self.state_manager.chains_completed = chains
+
+        episode_score = compute_episode_score(
             self.state_manager.findings,
             self.active_task.ground_truth,
             self.active_task.task_id,
             notes=self.state_manager.notes,
+            current_step=self.state_manager.step_number,
+            max_steps=self.active_task.max_steps,
+            chain_bonus=chain_bonus,
         )
-
-        # Fix 1: chain bonus on top of base score
-        chain_bonus, chains = self.state_manager.compute_chain_bonuses()
-        self.state_manager.chains_completed = chains
-        episode_score = min(1.0, base_score + chain_bonus)
 
         return (
             f"Episode complete. Score: {episode_score:.3f}"
@@ -327,6 +331,8 @@ class SecurityScannerEnv:
             self.active_task.ground_truth,
             self.active_task.task_id,
             notes=self.state_manager.notes,
+            current_step=self.state_manager.step_number,
+            max_steps=self.active_task.max_steps,
         )
 
         return StepResult(

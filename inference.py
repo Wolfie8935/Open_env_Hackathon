@@ -19,6 +19,22 @@ import re
 import time
 from typing import Optional
 
+# ─── Timeout Configuration ────────────────────────────────────
+
+TASK_TIME_LIMITS = {1: 240, 2: 360, 3: 600}  # seconds per task (4min, 6min, 10min)
+GLOBAL_TIME_LIMIT = 1140  # 19 minutes total (1 min buffer before 20 min hard limit)
+GLOBAL_START_TIME: float = 0.0  # set at start of main()
+
+
+def is_time_critical(task_start: float, task_id: int) -> bool:
+    """Returns True if we must finish this task NOW (approaching time limit)."""
+    task_elapsed = time.time() - task_start
+    global_elapsed = time.time() - GLOBAL_START_TIME
+    return (
+        task_elapsed > TASK_TIME_LIMITS[task_id]
+        or global_elapsed > GLOBAL_TIME_LIMIT
+    )
+
 import httpx
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -32,17 +48,11 @@ API_BASE_URL = os.environ.get("API_BASE_URL")
 MODEL_NAME = os.environ.get("MODEL_NAME")
 ENV_BASE_URL = os.environ.get("ENV_BASE_URL")
 
-if not API_KEY:
-    raise EnvironmentError(
-        "HF_TOKEN environment variable is required. "
-        "Set it in your .env file or export it."
-    )
-
 API_BASE_URL = os.environ.get("API_BASE_URL", API_BASE_URL)
 MODEL_NAME = os.environ.get("MODEL_NAME", MODEL_NAME)
 ENV_BASE_URL = os.environ.get("ENV_BASE_URL", ENV_BASE_URL)
 
-client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY) if API_KEY else None
 http_client = httpx.Client(base_url=ENV_BASE_URL, timeout=30.0)
 
 # ─── System Prompt ────────────────────────────────────────────
@@ -369,6 +379,8 @@ def extract_json_action(raw_text: str) -> Optional[dict]:
 
 def call_llm_with_retry(messages: list[dict], max_retries: int = 3) -> str:
     """Call the LLM API with exponential backoff retry."""
+    if client is None:
+        raise RuntimeError("HF_TOKEN is not set; LLM run is unavailable.")
     for attempt in range(max_retries):
         try:
             response = client.chat.completions.create(
@@ -444,6 +456,7 @@ def run_task(task_id: int) -> dict:
     false_positives = 0
     true_positives = 0
     gt_count = 0
+    task_start = time.time()  # per-task timer for timeout guard
 
     # Static analysis hints fetched once — shown on step 1 only.
     # Active insights from obs update every step via format_observation (Fix 5).
@@ -523,6 +536,57 @@ def run_task(task_id: int) -> dict:
 
         # Send to environment
         result = env_step(action)
+
+        # ── TIMEOUT GUARD — force completion if approaching limit ──────
+        if is_time_critical(task_start, task_id):
+            print(
+                f"    ⏱️  Time limit approaching — forcing task {task_id} completion",
+                flush=True,
+            )
+            try:
+                final_result = env_step({"action_type": "mark_complete", "payload": {}})
+                step_logs.append({
+                    "step": step_count,
+                    "action_type": "mark_complete",
+                    "action": {"action_type": "mark_complete", "payload": {}},
+                    "reward": 0.0,
+                    "feedback": "forced by timeout",
+                    "forced": True,
+                })
+                return {
+                    "task_id": task_id,
+                    "final_score": final_result.get("info", {}).get("episode_score", 0.0),
+                    "steps": step_logs,
+                    "total_steps": step_count,
+                    "true_positives": true_positives,
+                    "false_positives": false_positives,
+                    "ground_truth_count": gt_count,
+                    "missed_vulnerabilities": [],
+                    "security_analysis": {},
+                    "timed_out": True,
+                }
+            except Exception as e:
+                step_logs.append({
+                    "step": step_count,
+                    "action_type": "mark_complete",
+                    "action": {"action_type": "mark_complete", "payload": {}},
+                    "reward": 0.0,
+                    "feedback": f"forced completion failed: {e}",
+                    "forced": True,
+                })
+                return {
+                    "task_id": task_id,
+                    "final_score": result.get("info", {}).get("episode_score", 0.0),
+                    "steps": step_logs,
+                    "total_steps": step_count,
+                    "true_positives": true_positives,
+                    "false_positives": false_positives,
+                    "ground_truth_count": gt_count,
+                    "missed_vulnerabilities": [],
+                    "security_analysis": {},
+                    "timed_out": True,
+                    "timeout_fallback": "mark_complete_failed",
+                }
 
         reward = result.get("reward", 0)
         feedback = result.get("observation", {}).get("feedback", "")
@@ -609,9 +673,140 @@ def run_task(task_id: int) -> dict:
     }
 
 
+def run_deterministic_baseline() -> list[dict]:
+    """Run a rule-based scanner baseline with fixed regex signatures."""
+    signatures = [
+        ("SQL Injection", r"SELECT.*\{.*\}|SELECT.*%s"),
+        ("Hardcoded Secret", r"(API_KEY|PASSWORD|TOKEN)\s*=\s*['\"][^'\"]+['\"]"),
+        ("Command Injection", r"\beval\(|\bexec\(|os\.system\("),
+        ("Path Traversal", r"os\.path\.join\(.+request|open\(.+filename"),
+        ("Insecure Deserialization", r"pickle\.loads\("),
+        ("Broken Authentication", r"@app\.route\(.+\)\n\s*def .+\n(?!.*auth)"),
+        ("Weak Cryptography", r"hashlib\.(md5|sha1)\("),
+        ("SSRF", r"requests\.get\(.+url"),
+        ("XXE Injection", r"(ET|ElementTree)\.(parse|fromstring)\("),
+        ("IDOR", r"(filter_by|get)\(id\s*="),
+        ("Mass Assignment", r"(\*\*request\.json\(\)|__dict__\.update\()"),
+        ("Timing Attack", r"\bif\s+.+\s*==\s*.+:"),
+        ("CORS Misconfiguration", r"origins\s*=\s*[\"']\*[\"']"),
+        ("Debug Mode", r"DEBUG\s*=\s*True"),
+        ("JWT Misconfiguration", r"JWT_SECRET\s*=\s*['\"][^'\"]+['\"]"),
+    ]
+    severity_map = {
+        "SQL Injection": "Critical",
+        "Hardcoded Secret": "High",
+        "Command Injection": "Critical",
+        "Path Traversal": "High",
+        "Insecure Deserialization": "Critical",
+        "Broken Authentication": "High",
+        "Weak Cryptography": "High",
+        "SSRF": "High",
+        "XXE Injection": "High",
+        "IDOR": "High",
+        "Mass Assignment": "Medium",
+        "Timing Attack": "Medium",
+        "CORS Misconfiguration": "Medium",
+        "Debug Mode": "Medium",
+        "JWT Misconfiguration": "Critical",
+    }
+
+    baseline_results = []
+    for task_id in [1, 2, 3]:
+        obs = env_reset(task_id)
+        step_count = 0
+        detected: set[tuple[str, str]] = set()
+
+        while step_count < (obs.get("remaining_steps", 0) - 1):
+            step_count += 1
+            progressed = False
+
+            for filename, content in sorted(obs.get("files", {}).items()):
+                for vuln_type, pattern in signatures:
+                    if (filename, vuln_type) in detected:
+                        continue
+                    match = re.search(pattern, content, flags=re.MULTILINE)
+                    if not match:
+                        continue
+                    line_number = content[: match.start()].count("\n") + 1
+                    action = {
+                        "action_type": "report_vulnerability",
+                        "payload": {
+                            "file": filename,
+                            "line_number": line_number,
+                            "vulnerability_type": vuln_type,
+                            "severity": severity_map[vuln_type],
+                            "description": "Rule-based regex match.",
+                            "suggested_fix": "Replace unsafe pattern with secure equivalent and add validation.",
+                        },
+                    }
+                    result = env_step(action)
+                    obs = result.get("observation", obs)
+                    detected.add((filename, vuln_type))
+                    progressed = True
+                    break
+                if progressed:
+                    break
+
+            if progressed:
+                continue
+
+            hidden_files: list[str] = []
+            try:
+                state_resp = http_client.get("/state")
+                state_resp.raise_for_status()
+                state = state_resp.json()
+                hidden_files = sorted(
+                    set(state.get("all_files", [])) - set(obs.get("files", {}).keys())
+                )
+            except Exception:
+                hidden_files = []
+            if hidden_files:
+                result = env_step({"action_type": "request_file", "payload": {"filename": hidden_files[0]}})
+                obs = result.get("observation", obs)
+                continue
+            break
+
+        final = env_step({"action_type": "mark_complete", "payload": {}})
+        info = final.get("info", {})
+        baseline_results.append({
+            "task_id": task_id,
+            "final_score": info.get("episode_score", 0.0),
+            "true_positives": len([f for f in final.get("observation", {}).get("current_findings", [])]),
+            "ground_truth_count": info.get("ground_truth_count", 0),
+            "false_positives": max(0, len(detected) - info.get("ground_truth_count", 0)),
+            "total_steps": step_count + 1,
+            "mode": "deterministic",
+        })
+    return baseline_results
+
+
+def print_comparison(llm_results: list[dict], baseline_results: list[dict]) -> None:
+    """Print task-level and overall LLM-vs-baseline comparison."""
+    print("\n  DETERMINISTIC VS LLM", flush=True)
+    print("  " + "-" * 58, flush=True)
+    llm_by_task = {r["task_id"]: r for r in llm_results}
+    base_by_task = {r["task_id"]: r for r in baseline_results}
+    for task_id in [1, 2, 3]:
+        llm = llm_by_task.get(task_id, {})
+        base = base_by_task.get(task_id, {})
+        llm_score = llm.get("final_score", 0.0)
+        base_score = base.get("final_score", 0.0)
+        print(
+            f"  Task {task_id}: LLM {llm_score:.3f} | Deterministic {base_score:.3f} | "
+            f"Gap {llm_score - base_score:+.3f}",
+            flush=True,
+        )
+    llm_overall = sum(r.get("final_score", 0.0) for r in llm_results) / 3 if llm_results else 0.0
+    base_overall = sum(r.get("final_score", 0.0) for r in baseline_results) / 3 if baseline_results else 0.0
+    print(f"  Overall gap: {llm_overall - base_overall:+.3f}", flush=True)
+    print("  " + "-" * 58, flush=True)
+
+
 def main():
     """Run the agent through all 3 tasks and print summary."""
-    start_time = time.time()
+    global GLOBAL_START_TIME
+    GLOBAL_START_TIME = time.time()
+    start_time = GLOBAL_START_TIME
 
     print("\n" + "=" * 60, flush=True)
     print("  SECURITY VULNERABILITY SCANNER — INFERENCE", flush=True)
@@ -629,28 +824,33 @@ def main():
         print("  Make sure the server is running: uvicorn main:app --port 7860", flush=True)
         return
 
-    results = []
+    print("\n  Running deterministic baseline...", flush=True)
+    baseline_results = run_deterministic_baseline()
 
-    # Fix 4: Each task runs exactly once, isolated with try/except
-    for task_id in [1, 2, 3]:
-        try:
-            result = run_task(task_id)
-            results.append(result)
-        except Exception as e:
-            print(f"\n  ✖ Task {task_id} failed with error: {e}", flush=True)
-            print(f"  Continuing to next task...", flush=True)
-            results.append({
-                "task_id": task_id,
-                "final_score": 0.0,
-                "steps": [],
-                "total_steps": 0,
-                "true_positives": 0,
-                "false_positives": 0,
-                "ground_truth_count": 0,
-                "missed_vulnerabilities": [],
-                "security_analysis": {},
-                "error": str(e),
-            })
+    results = []
+    if client is None:
+        print("  HF_TOKEN not set — skipping LLM run.", flush=True)
+    else:
+        # Each task runs exactly once, isolated with try/except
+        for task_id in [1, 2, 3]:
+            try:
+                result = run_task(task_id)
+                results.append(result)
+            except Exception as e:
+                print(f"\n  ✖ Task {task_id} failed with error: {e}", flush=True)
+                print(f"  Continuing to next task...", flush=True)
+                results.append({
+                    "task_id": task_id,
+                    "final_score": 0.0,
+                    "steps": [],
+                    "total_steps": 0,
+                    "true_positives": 0,
+                    "false_positives": 0,
+                    "ground_truth_count": 0,
+                    "missed_vulnerabilities": [],
+                    "security_analysis": {},
+                    "error": str(e),
+                })
 
     elapsed = time.time() - start_time
     minutes = int(elapsed // 60)
@@ -660,7 +860,7 @@ def main():
 
     task_names = {1: "Easy", 2: "Medium", 3: "Hard"}
     total_score = 0
-    for r in results:
+    for r in results if results else baseline_results:
         tid = r["task_id"]
         score = r["final_score"]
         total_score += score
@@ -674,15 +874,22 @@ def main():
             flush=True,
         )
 
-    overall = total_score / len(results) if results else 0
+    overall = total_score / (len(results) if results else len(baseline_results))
     print(f"\n  Overall:         {overall:.3f}", flush=True)
     print(f"  Time elapsed:    {minutes}m {seconds}s", flush=True)
+
+    if results:
+        print_comparison(results, baseline_results)
+    else:
+        print("  LLM comparison unavailable (no HF_TOKEN).", flush=True)
+
     print("=" * 60, flush=True)
 
     results_file = "inference_results.json"
     with open(results_file, "w") as f:
         json.dump({
             "results": results,
+            "deterministic_baseline": baseline_results,
             "overall_score": overall,
             "elapsed_seconds": elapsed,
             "model": MODEL_NAME,

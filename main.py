@@ -51,6 +51,14 @@ def get_all_tasks() -> list[TaskInfo]:
     ]
 
 
+def compact_task_payload(tasks: list[TaskInfo]) -> list[dict]:
+    """Return compact task metadata for validator-friendly endpoints."""
+    return [
+        {"id": t.task_id, "name": t.name, "difficulty": t.difficulty}
+        for t in tasks
+    ]
+
+
 # ─── Exception handlers ──────────────────────────────────────
 
 @app.exception_handler(RequestValidationError)
@@ -133,14 +141,8 @@ async def validate():
     return {
         "openenv_compliant": True,
         "spec_version": "1.0",
+        "environment_name": "security-vulnerability-scanner",
         "endpoints": ["/reset", "/step", "/state", "/tasks", "/health", "/validate"],
-        "tasks": [t.model_dump() for t in tasks],
-        "action_space": [
-            "report_vulnerability",
-            "request_file",
-            "mark_complete",
-            "add_note",
-        ],
         "observation_fields": [
             "files",
             "current_findings",
@@ -148,7 +150,16 @@ async def validate():
             "task_id",
             "feedback",
             "remaining_steps",
+            "active_insights",
+            "suspicious_files",
         ],
+        "action_types": [
+            "report_vulnerability",
+            "request_file",
+            "mark_complete",
+            "add_note",
+        ],
+        "tasks": compact_task_payload(tasks),
     }
 
 

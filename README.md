@@ -1,3 +1,20 @@
+---
+title: Security Vulnerability Scanner
+emoji: 🔒
+colorFrom: blue
+colorTo: red
+sdk: docker
+pinned: true
+tags:
+  - openenv
+  - security
+  - reinforcement-learning
+  - code-review
+  - vulnerability-detection
+  - llm-evaluation
+short_description: "OpenEnv environment for AI security code auditing — 3 tasks, 15 vulnerability types, cascading discovery mechanics"
+---
+
 # Security Vulnerability Scanner
 
 An AI agent environment for automated security code review and vulnerability detection. Built as an [OpenEnv](https://openenv.dev)-compatible reinforcement learning environment where agents analyze Python codebases to find planted security vulnerabilities across 3 tasks of increasing difficulty.
@@ -74,7 +91,7 @@ Audit a production-style SaaS platform REST API with authentication, webhooks, X
 | False positive | Reported vulnerability not in ground truth | -0.1 |
 | Duplicate | Same (file + type) reported twice | -0.05 |
 | Notes bonus | Security reasoning notes submitted (Task 3 only) | +0.05 (episode) |
-| Early completion | Finished in ≤60% steps with ≥80% detection rate | +0.1 (episode) |
+| Early completion | Finished in ≤50% steps with 100% detection rate | +0.05 (episode) |
 
 **Episode score formula:**
 ```
@@ -222,6 +239,39 @@ This section documents where agents fail and why — a signal that this is a res
 - Python 3.11+
 - pip
 - Docker (optional)
+- uv (recommended for lockfile + validator workflow)
+
+### Fresh Machine Setup (Windows / macOS / Linux)
+
+```bash
+# 1) Clone
+git clone <YOUR_REPO_URL>
+cd "openenv hack"
+
+# 2) Create venv
+Windows (PowerShell): python -m venv .venv && .\.venv\Scripts\Activate.ps1
+macOS/Linux:         python3 -m venv .venv && source .venv/bin/activate
+
+# 3) Install deps
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# 4) (Recommended) sync + validate with uv
+uv lock
+uv run openenv validate
+
+# 5) Run tests
+pytest tests/ -v
+```
+
+Create `.env` in repo root:
+
+```env
+HF_TOKEN=<your_token>
+API_BASE_URL=<your_api_base_url>
+MODEL_NAME=<your_model_name>
+ENV_BASE_URL=http://localhost:7860
+```
 
 ### Local Setup
 
@@ -234,6 +284,9 @@ pytest tests/ -v
 
 # Start the API server
 uvicorn main:app --host 0.0.0.0 --port 7860
+
+# Alternative server entrypoint
+python -m server.app
 ```
 
 ### Docker Setup
@@ -279,7 +332,34 @@ python inference.py
 | `MODEL_NAME` | No | `meta/llama-3.1-70b-instruct` | Model identifier |
 | `ENV_BASE_URL` | No | `http://localhost:7860` | Environment server URL |
 
-## API Endpoints
+## API Reference
+
+### Validate OpenEnv Compliance
+```bash
+curl http://localhost:7860/validate
+```
+
+Expected response:
+```json
+{
+  "openenv_compliant": true,
+  "spec_version": "1.0",
+  "environment_name": "security-vulnerability-scanner",
+  "endpoints": ["/reset", "/step", "/state", "/tasks", "/health", "/validate"],
+  "observation_fields": [
+    "files", "current_findings", "step_number", "task_id",
+    "feedback", "remaining_steps", "active_insights", "suspicious_files"
+  ],
+  "action_types": ["report_vulnerability", "request_file", "mark_complete", "add_note"],
+  "tasks": [
+    {"id": 1, "name": "Single File Audit", "difficulty": "easy"},
+    {"id": 2, "name": "Multi-File Flask App", "difficulty": "medium"},
+    {"id": 3, "name": "Real-World Project Audit", "difficulty": "hard"}
+  ]
+}
+```
+
+### All Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|

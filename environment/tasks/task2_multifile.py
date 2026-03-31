@@ -27,7 +27,14 @@ class Task2MultiFile(BaseTask):
 
     def __init__(self):
         data_dir = Path(__file__).parent.parent / "data" / "task2"
+        assert (data_dir / "config.py").exists(), f"Task2 config not found at {data_dir}"
+
         self.files = self.load_file_contents(data_dir)
+
+        config_content = self.files.get("config.py", "")
+        # Task2 config has CORS settings, NOT JWT_SECRET (that's task3)
+        assert "JWT_SECRET" not in config_content, "Wrong config.py loaded for Task2 — found JWT_SECRET"
+
         from environment.data.task2 import TASK2_GROUND_TRUTH
         self.ground_truth = TASK2_GROUND_TRUTH
 

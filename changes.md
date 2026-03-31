@@ -1,52 +1,141 @@
-# OpenEnv Security Scanner — Architectural Overhaul Summary
+# OpenEnv Security Scanner — Setup and Migration Guide
 
-This document summarizes the 5 critical architectural improvements implemented during this session to enhance the realism, evaluation rigor, and performance of the OpenEnv-based security vulnerability scanner.
-
----
-
-## 1. Cascading State Discovery (Fix 1)
-**Files Modified:** `environment/models.py`, `environment/state_manager.py`, `environment/env.py`
-
-Implemented a mechanism where true positive findings unlock new insights and highlight suspicious files for the agent.
-- **`active_insights`**: New observation field that provides context when vulnerabilities are confirmed (e.g., "Hardcoded secret found — check if this key allows lateral movement").
-- **`suspicious_files`**: Automatically flags filenames for investigation when an exploit chain is suspected.
-- **Attack Chain Bonuses**: Agents are now rewarded with bonus scores (up to +0.15) for identifying complex multi-vulnerability chains (e.g., *Full RCE Chain* via Path Traversal + Pickle, or *Complete Account Takeover* via JWT forgery + Timing Attack).
-
-## 2. Reasoning-Based Grader (Fix 2)
-**Files Modified:** `environment/graders/grader3.py`
-
-Replaced the pattern-matching grader with a pure-Python logic-based evaluator that scores on four distinct axes:
-- **Detection Accuracy (40%)**: Correct type and file match.
-- **Fix Specificity (20%)**: Penalizes generic advice. Rewards the use of specific actionable terms (e.g., `hmac.compare_digest`, `parameterized queries`, `os.environ.get`).
-- **Severity Assessment (15%)**: Measures if the agent correctly classifies the risk magnitude.
-- **Methodology Bonus (5%)**: Rewards the agent for providing detailed reasoning/attack chain notes via the `add_note` action.
-
-## 3. Task-Specific Mechanics (Fix 3)
-**Files Modified:** `environment/state_manager.py`, `environment/tasks/task3_realworld.py`
-
-Introduced advanced difficulty mechanics to force deliberate investigation:
-- **Static Analysis Summaries (Task 2)**: For Task 2, revealed files now contain a prepended "Static Scan Summary" with regex-based hints (sink analysis, dangerous calls) to simulate real-world tooling.
-- **Triage Mode / File Skeletons (Task 3)**: Task 3 now initially presents files as "skeletons" (signatures only). Agents must use the `request_file` action to "upgrade" to full content, preventing agents from scanning everything in one pass without deliberate selection.
-
-## 4. Realistic Data Noise (Fix 5)
-**Files Modified:** `environment/data/task1/`, `environment/data/task2/`, `environment/data/task3/`
-
-Increased the complexity of the vulnerable codebases to mirror real-world production repositories:
-- **Developer Artifacts**: Added TODOs, FIXME comments, and realistic README-style docstrings.
-- **Contextual Noise**: Injected commented-out legacy code, unused imports, and non-vulnerable "helper" functions between target lines.
-- **Preserved Ground Truth**: Ensured all line numbers remained accurate for scoring despite the added noise.
-
-## 5. Technical Verification
-- **Test Suite**: Verified all 78 existing tests pass (`pytest tests/ -v`) ensuring zero regression on core environment mechanics.
-- **Token Efficiency**: All enhancements (insights, skeletons, static hints) were implemented as minimal text fields to keep prompt lengths low for NVIDIA NIM inference.
+This file is a clean setup runbook for getting this repository running on a new system.  
+It intentionally avoids command outputs/log dumps and focuses only on process + commands.
 
 ---
 
-> [!NOTE]
-> Fix 4 (Deterministic Baseline Agent): To maintain zero-LLM API cost for comparison, a rule-based scanning logic was added to `state_manager.py` (regex patterns). The external wrapper for baseline execution in `inference.py` is ready for integration as a next-step.
+## 1) Clone the repository
 
-## 5. Next Steps
-- **Fix 4 Integration**: Append `run_deterministic_baseline` to `inference.py` to establish a performance floor.
-- **Continuous Validation**: Run full task suites with the reasoning grader to fine-tune `SPECIFIC_FIX_TERMS`.
-- **Latency Monitoring**: Ensure `_get_static_hints` regex execution does not impact environment step latency.
+```bash
+git clone <YOUR_REPO_URL>
+cd "openenv hack"
+```
+
+---
+
+## 2) Create and activate a virtual environment
+
+### Windows (PowerShell)
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+### macOS / Linux (bash/zsh)
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+---
+
+## 3) Install dependencies
+
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+Optional (if using uv workflow):
+
+```bash
+pip install uv
+uv sync
+```
+
+---
+
+## 4) Configure environment variables
+
+Create a `.env` file at repo root:
+
+```env
+HF_TOKEN=<your_hf_or_router_token>
+API_BASE_URL=<your_api_base_url>
+MODEL_NAME=<your_model_name>
+ENV_BASE_URL=http://localhost:7860
+```
+
+Minimum required for inference:
+- `HF_TOKEN`
+- `API_BASE_URL`
+- `MODEL_NAME`
+
+---
+
+## 5) Validate project packaging + OpenEnv readiness
+
+```bash
+uv lock
+uv run openenv validate
+```
+
+Expected status: validator reports readiness for multi-mode deployment.
+
+---
+
+## 6) Run unit tests
+
+```bash
+pytest tests/ -v
+```
+
+---
+
+## 7) Start the environment server
+
+### Option A (direct)
+```bash
+uvicorn main:app --host 0.0.0.0 --port 7860
+```
+
+### Option B (script entry point)
+```bash
+python -m server.app
+```
+
+---
+
+## 8) Run inference (new terminal)
+
+```bash
+python inference.py
+```
+
+This runs deterministic baseline + LLM run (if token/config is available).
+
+---
+
+## 9) Docker setup (for HF Spaces style deployment)
+
+```bash
+docker build -t security-scanner .
+docker run -p 7860:7860 security-scanner
+```
+
+Then run local API checks or inference against `http://localhost:7860`.
+
+---
+
+## 10) Quick health checks
+
+```bash
+curl http://localhost:7860/health
+curl http://localhost:7860/tasks
+curl -X POST http://localhost:7860/reset -H "Content-Type: application/json" -d "{\"task_id\":1}"
+```
+
+---
+
+## 11) Common issues on a fresh machine
+
+- `openenv` command missing:
+  - Use `uv run openenv validate` after `uv sync`, or install `openenv-core` in active venv.
+- Docker build fails with engine pipe/daemon errors:
+  - Start Docker Desktop / Docker daemon first.
+- Inference cannot call LLM:
+  - Check `.env` values for `HF_TOKEN`, `API_BASE_URL`, `MODEL_NAME`.
+- Port conflict on `7860`:
+  - Free the port or run server on another port and update `ENV_BASE_URL`.
 

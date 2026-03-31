@@ -95,7 +95,8 @@ class TestReportVulnerability:
         ))
         assert result.reward < 0
 
-    def test_duplicate_finding_gives_zero_reward(self, env):
+    def test_duplicate_finding_gives_penalty(self, env):
+        """Duplicate (file + type) reports incur the DUPLICATE_PENALTY of -0.05."""
         env.reset(1)
         payload = {
             "file": "vulnerable_code.py",
@@ -105,13 +106,13 @@ class TestReportVulnerability:
             "description": "API key is hardcoded directly in the source code",
             "suggested_fix": "Use os.environ.get() to read API key from environment variables",
         }
-        # First report
+        # First report — true positive
         r1 = env.step(Action(action_type=ActionType.REPORT_VULNERABILITY, payload=payload))
         assert r1.reward > 0
 
-        # Duplicate report
+        # Duplicate report — env applies DUPLICATE_PENALTY (-0.05) per documented behavior
         r2 = env.step(Action(action_type=ActionType.REPORT_VULNERABILITY, payload=payload))
-        assert r2.reward == 0.0
+        assert r2.reward == pytest.approx(-0.05)
 
 
 class TestRequestFile:

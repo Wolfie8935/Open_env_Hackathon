@@ -235,8 +235,11 @@ def compute_episode_score(
     ground_truth: list[dict],
     task_id: int,
     notes: list[str] | None = None,
-    steps_used: int | None = None,
+    current_step: int = 0,
     max_steps: int | None = None,
+    chain_bonus: float = 0.0,
+    # Legacy aliases — kept for backward compat with old call sites
+    steps_used: int | None = None,
 ) -> float:
     """Compute the final normalized score for a complete episode.
 
@@ -244,8 +247,8 @@ def compute_episode_score(
     raw = sum of per-finding rewards (each clamped at 0)
     score = clamp(raw / max_possible, 0.0, 1.0)
 
-    Early completion bonus (+0.1) awarded when agent finishes
-    in ≤60% of max_steps AND achieves ≥80% true positive rate.
+    Early completion bonus (+0.05) awarded when agent finishes
+    in ≤50% of max_steps AND finds ALL vulnerabilities.
     Encourages efficient, precise scanning over step-burning.
     """
     if not ground_truth:
@@ -271,14 +274,19 @@ def compute_episode_score(
     if task_id == 3 and notes:
         total_reward += compute_notes_bonus(notes)
 
+    # Resolve step count (current_step takes priority over legacy steps_used)
+    effective_step = steps_used if steps_used is not None else current_step
+
+    # Early completion bonus — only if ALL vulnerabilities found AND ≤50% steps used
     if (
-        steps_used is not None
-        and max_steps is not None
+        max_steps is not None
         and max_steps > 0
-        and steps_used <= max_steps * 0.6
-        and len(ground_truth) > 0
-        and true_positive_count / len(ground_truth) >= 0.80
+        and effective_step <= max_steps * 0.5
+        and true_positive_count >= len(ground_truth)
     ):
-        total_reward += 0.1
+        total_reward += 0.05
+
+    # Chain bonus (passed from env.py _handle_mark_complete)
+    total_reward += chain_bonus
 
     return max(0.0, min(1.0, total_reward / max_possible))
