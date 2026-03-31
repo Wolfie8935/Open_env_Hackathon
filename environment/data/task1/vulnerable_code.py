@@ -31,7 +31,6 @@ CONNECTION_TIMEOUT = 30
 #     _pool.append(conn)
 # --- End legacy code ---
 
-
 class DatabaseManager:
     """Manages database connections and query execution."""
 
@@ -83,14 +82,12 @@ class DatabaseManager:
             self.connection.close()
             self.logger.info("Database connection closed")
 
-
 def normalize_record(record: dict) -> dict:
     """Normalize a user record for API response.
     Strips internal fields and formats timestamps.
     """
     safe_fields = {"id", "username", "email", "created_at", "role"}
     return {k: v for k, v in record.items() if k in safe_fields}
-
 
 class DataProcessor:
     """Processes and validates user data from various sources."""
@@ -126,13 +123,13 @@ class DataProcessor:
     def process_batch(self, records: list[dict]) -> dict:
         """Process a batch of user records and return summary statistics."""
         valid = [r for r in records if self.validate_email(r.get("email", ""))]
+        logger.info(f"Batch processed: {len(records)} total, {len(valid)} valid")
         return {
             "total": len(records),
             "valid": len(valid),
             "invalid": len(records) - len(valid),
             "processed_at": str(os.times()),
         }
-
 
 def create_user_hash(username: str, salt: str = "app_salt_v2") -> str:
     """Generate a hash for user identification."""
@@ -147,8 +144,7 @@ def get_api_headers() -> dict:
         "X-Request-ID": hashlib.md5(os.urandom(16)).hexdigest(),
     }
 
-
-# --- GROUND TRUTH ---
+# GROUND TRUTH
 GROUND_TRUTH = [
     {
         "line": 9,

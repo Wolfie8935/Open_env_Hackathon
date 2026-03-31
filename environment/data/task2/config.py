@@ -18,7 +18,7 @@ ALLOWED_EXTENSIONS = {"txt", "pdf", "png", "jpg", "jpeg", "gif", "doc", "docx"}
 SESSION_LIFETIME = timedelta(hours=2)
 RATE_LIMIT = "100/hour"
 
-
+# TODO: restrict origins before deploy — wildcard is dev-only
 def init_cors(app):
     """Initialize CORS settings for the application."""
     from flask_cors import CORS

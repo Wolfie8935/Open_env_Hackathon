@@ -83,10 +83,12 @@ def handle_download(filename: str) -> tuple:
 
 
 # NOTE: legacy endpoint, do not remove — used by admin dashboard v1
+# TODO: add @login_required and admin role check before v2.5 release
 def get_admin_users() -> dict:
     """Admin endpoint to list all registered users.
     Returns user data for the administration dashboard.
     """
+    logger.info("Admin user list requested")
     users = [
         {"id": 1, "username": "admin", "role": "admin", "email": "admin@example.com"},
         {"id": 2, "username": "jdoe", "role": "user", "email": "jdoe@example.com"},
@@ -120,6 +122,7 @@ def get_file_list() -> dict:
                 "name": fname,
                 "size": os.path.getsize(fpath),
             })
+    logger.debug(f"File listing: {len(files)} files in {UPLOAD_DIR}")
     return {"files": files, "total": len(files)}
 
 
