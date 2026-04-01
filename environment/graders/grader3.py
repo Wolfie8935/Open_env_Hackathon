@@ -8,7 +8,8 @@ from environment.graders.base_grader import BaseGrader
 from environment.models import Finding
 from environment.reward import _types_match, _has_fix_quality, LINE_TOLERANCE
 
-#Terms that indicate specific, actionable fixes (not generic advice)
+
+# Terms that indicate specific, actionable fixes (not generic advice)
 SPECIFIC_FIX_TERMS = [
     "parameterized", "prepared statement", "os.environ", "environment variable",
     "bcrypt", "argon2", "hmac.compare_digest", "ast.literal_eval",
@@ -17,34 +18,15 @@ SPECIFIC_FIX_TERMS = [
     "@login_required", "csrf", "content security policy",
 ]
 
-#Terms indicating chain/methodology reasoning
+# Terms indicating chain/methodology reasoning
 CHAIN_TERMS = [
     "chain", "combined", "leads to", "enables", "together",
     "combined with", "escalat", "pivot", "lateral",
 ]
 
-#Exploit chain definitions (objective layer)
-EXPLOIT_CHAINS = [
-    [
-        ("config.py", "JWT Misconfiguration"),
-        ("auth.py", "Timing Attack"),
-        ("views.py", "IDOR"),
-    ],
-    [
-        ("app.py", "Path Traversal"),
-        ("utils.py", "Insecure Deserialization"),
-    ],
-]
-
-#Severity ordering for triage mode
-SEVERITY_ORDER = {
-    "critical": 4,
-    "high": 3,
-    "medium": 2,
-    "low": 1,
-}
-
-#Fix 7: Additional semantic alias pairs for grader-level matching.
+# Fix 7: Additional semantic alias pairs for grader-level matching.
+# These catch cases where the agent uses a slightly different but valid
+# description of the same vulnerability class.
 SEMANTIC_PAIRS = [
     ("sqli", "sql injection"),
     ("rce", "command injection"),
@@ -64,7 +46,9 @@ SEMANTIC_PAIRS = [
     ("cross origin", "cors misconfiguration"),
 ]
 
+
 def _semantic_match(finding_type: str, gt_type: str) -> bool:
+    """Extended semantic match covering shorthand terms judges might see."""
     f = finding_type.lower().strip()
     g = gt_type.lower().strip()
     if f == g:
@@ -74,38 +58,28 @@ def _semantic_match(finding_type: str, gt_type: str) -> bool:
             return True
     return False
 
-def _triage_bonus(findings: list[Finding]) -> float:
-    """Reward correct vulnerability prioritization."""
-    if not findings:
-        return 0.0
-
-    ranks = [SEVERITY_ORDER.get((f.severity or "").lower(), 1) for f in findings]
-
-    if ranks == sorted(ranks, reverse=True):
-        return 0.05
-
-    return 0.0
-
-def _chain_bonus(findings: list[Finding]) -> float:
-    """Reward discovery of multi-step exploit chains."""
-    discovered = {(f.file, f.vulnerability_type) for f in findings}
-
-    for chain in EXPLOIT_CHAINS:
-        if all(step in discovered for step in chain):
-            return 0.05
-
-    return 0.0
 
 class Grader3(BaseGrader):
-    """Reasoning-based grader with multi-axis rubric."""
+    """Reasoning-based grader with multi-axis rubric.
 
-    def grade(
-        self,
-        findings: list[Finding],
-        ground_truth: list[dict],
-        notes: list[str] | None = None,
-    ) -> float:
+    Scoring axes (per GT entry matched):
+        - Detection accuracy:   0.40 (type + file)
+        - Line proximity:       0.10 (within ±3, Fix 7: uses LINE_TOLERANCE)
+        - Severity match:       0.15 (correct severity)
+        - Fix specificity:      0.20 (actionable fix terms)
+        - Fix quality:          0.15 (base fix quality)
 
+    False positive penalty: -0.12 per false positive.
+    Notes bonus: +0.05 if methodology notes provided (via notes param).
+
+    Fix 7 changes:
+        - Line tolerance uses shared LINE_TOLERANCE constant (±3)
+        - Added _semantic_match() for richer alias coverage
+        - Both _types_match() AND _semantic_match() checked for detection
+    """
+
+    def grade(self, findings: list[Finding], ground_truth: list[dict],
+              notes: list[str] | None = None) -> float:
         if not ground_truth:
             return 0.0
         if not findings:
@@ -122,6 +96,7 @@ class Grader3(BaseGrader):
                 if idx in used_findings:
                     continue
 
+                # Fix 7: accept both the alias map AND extended semantic pairs
                 type_ok = (
                     _types_match(finding.vulnerability_type, gt["type"])
                     or _semantic_match(finding.vulnerability_type, gt["type"])
@@ -131,16 +106,20 @@ class Grader3(BaseGrader):
                 if finding.file != gt["file"]:
                     continue
 
-                score = 0.45
+                # Detection accuracy: type + file match
+                score = 0.40
 
+                # Fix 7: Line proximity — uses shared LINE_TOLERANCE (±3)
                 if abs(finding.line_number - gt["line"]) <= LINE_TOLERANCE:
                     score += 0.10
 
+                # Severity match
                 gt_sev = gt.get("severity", "").lower()
                 finding_sev = finding.severity.lower() if finding.severity else ""
                 if gt_sev and finding_sev == gt_sev:
                     score += 0.15
 
+                # Fix specificity: uses specific actionable terms
                 fix_lower = (finding.suggested_fix or "").lower()
                 specific = sum(1 for t in SPECIFIC_FIX_TERMS if t in fix_lower)
                 if specific >= 2:
@@ -148,6 +127,7 @@ class Grader3(BaseGrader):
                 elif specific >= 1:
                     score += 0.10
 
+                # Fix quality: base quality check
                 if _has_fix_quality(finding.suggested_fix):
                     score += 0.15
 
@@ -162,9 +142,9 @@ class Grader3(BaseGrader):
 
         coverage = sum(entry_scores) / len(ground_truth)
 
-        #False positive penalty
+        # False positive penalty
         fp_count = 0
-        for finding in findings:
+        for idx, finding in enumerate(findings):
             matched = False
             for gt in ground_truth:
                 type_ok = (
@@ -179,7 +159,7 @@ class Grader3(BaseGrader):
 
         fp_penalty = fp_count * 0.12
 
-        # Notes bonus
+        # Notes bonus: reward methodology documentation
         notes_bonus = 0.0
         if notes:
             combined = " ".join(notes).lower()
@@ -188,10 +168,5 @@ class Grader3(BaseGrader):
             elif len(combined) > 50:
                 notes_bonus = 0.02
 
-        # New bonuses
-        triage_bonus = _triage_bonus(findings)
-        chain_bonus = _chain_bonus(findings)
-
-        raw = coverage - fp_penalty + notes_bonus + triage_bonus + chain_bonus
-
+        raw = coverage - fp_penalty + notes_bonus
         return max(0.0, min(1.0, raw))
