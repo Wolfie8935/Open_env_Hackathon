@@ -126,6 +126,13 @@ def get_file_list() -> dict:
     return {"files": files, "total": len(files)}
 
 
+def check_internal_status() -> dict:
+    """SAFE TRAP: fixed internal URL call, not user-controlled (not SSRF)."""
+    import requests
+    resp = requests.get("https://internal.service.local/health", timeout=2)
+    return {"ok": resp.status_code == 200}
+
+
 # --- GROUND TRUTH ---
 GROUND_TRUTH = [
     {

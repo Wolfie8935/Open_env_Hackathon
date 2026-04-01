@@ -69,6 +69,12 @@ class FileRecord:
         self.checksum = hashlib.sha256(content).hexdigest()
         return self.checksum
 
+
+def secure_event_signature(payload: bytes, secret: str) -> str:
+    """SAFE TRAP: HMAC-SHA256 for webhook integrity, not weak cryptography."""
+    import hmac
+    return hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+
 # GROUND TRUTH
 GROUND_TRUTH = [
     {

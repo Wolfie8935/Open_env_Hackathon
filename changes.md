@@ -139,3 +139,42 @@ curl -X POST http://localhost:7860/reset -H "Content-Type: application/json" -d 
 - Port conflict on `7860`:
   - Free the port or run server on another port and update `ENV_BASE_URL`.
 
+---
+
+## 12) Latest Feature Updates (Current State)
+
+The project was extended with trap-aware evaluation and scoring improvements while preserving compatibility.
+
+### Feature flags currently in use
+
+From `environment/config.py`:
+
+- `ENABLE_EVIDENCE_MODE = False`
+- `ENABLE_ADVERSARIAL_TRAPS = True`
+- `ENABLE_PRECISION_SCORING = True`
+- `ENABLE_ANTI_GAMING_ESCALATION = True`
+
+### What was added
+
+- **Adversarial false-positive traps**
+  - Safe-but-suspicious patterns across easy/medium/hard tasks to catch over-reporting.
+- **Inference trap interception**
+  - Deterministic pre-step checks in `inference.py` block likely trap reports and push re-analysis.
+- **Precision-aware scoring behavior**
+  - Improves separation between precise and spammy reporting trajectories.
+- **Escalating anti-gaming penalties**
+  - Repeated false positives are penalized more strongly.
+- **Reproducibility controls in inference**
+  - Sampling settings, reproducibility mode flags, and bounded retries are configurable via environment variables.
+
+### Configuration source of truth
+
+Inference loads runtime configuration from `.env` (via `python-dotenv`):
+
+- `HF_TOKEN`
+- `API_BASE_URL`
+- `MODEL_NAME`
+- `ENV_BASE_URL`
+
+For submission consistency, define these explicitly in `.env` and keep them fixed across runs.
+

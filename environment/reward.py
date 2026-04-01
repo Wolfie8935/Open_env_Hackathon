@@ -5,6 +5,10 @@ No state, no side effects — same inputs always produce same outputs.
 """
 
 from environment.models import Finding
+from environment.config import (
+    ENABLE_ANTI_GAMING_ESCALATION,
+    ENABLE_EVIDENCE_MODE,
+)
 
 #Type Alias Map
 TYPE_ALIASES: dict[str, list[str]] = {
@@ -162,6 +166,58 @@ def compute_notes_bonus(notes: list[str]) -> float:
 #Line Tolerance
 LINE_TOLERANCE = 3
 
+GENERIC_EVIDENCE_TOKENS = {"generic", "unknown", "n/a", "none", "safe", "not sure"}
+
+
+def _count_false_positives(findings: list[Finding], ground_truth: list[dict]) -> int:
+    """Count previous reports that did not match any ground-truth entry."""
+    return sum(
+        1
+        for prev in findings
+        if find_matching_ground_truth(prev, ground_truth) is None
+    )
+
+
+def _is_low_quality_evidence(value: str | None) -> bool:
+    if not value:
+        return True
+    cleaned = value.strip().lower()
+    return len(cleaned) < 10 or cleaned in GENERIC_EVIDENCE_TOKENS
+
+
+def compute_evidence_score(finding: Finding) -> float:
+    """Compute evidence quality bonus/penalty for report payloads.
+
+    Only applies when evidence mode is enabled.
+    """
+    if not ENABLE_EVIDENCE_MODE:
+        return 0.0
+
+    fields = {
+        "source": finding.data_flow_source,
+        "sink": finding.sink,
+        "reason": finding.exploitability_reason,
+    }
+
+    source_ok = not _is_low_quality_evidence(fields["source"])
+    sink_ok = not _is_low_quality_evidence(fields["sink"])
+    reason_ok = not _is_low_quality_evidence(fields["reason"])
+
+    score = 0.0
+    if source_ok:
+        score += 0.05
+    if sink_ok:
+        score += 0.05
+    if reason_ok:
+        score += 0.05
+
+    # Contradiction heuristic: reporting exploitation while reason says it is safe.
+    reason = (fields["reason"] or "").lower()
+    if any(token in reason for token in ("safe", "not exploitable", "no risk")):
+        score -= 0.05
+
+    return score
+
 def compute_step_reward(
     finding: Finding,
     ground_truth: list[dict],
@@ -185,6 +241,7 @@ def compute_step_reward(
         "line_bonus": 0.0,
         "fix_bonus": 0.0,
         "severity_bonus": 0.0,
+        "evidence_bonus": 0.0,
         "false_positive": 0.0,
         "duplicate_penalty": 0.0,
     }
@@ -203,8 +260,15 @@ def compute_step_reward(
 
     if match is None:
         # False positive
-        breakdown["false_positive"] = -0.1
-        return -0.1, breakdown
+        fp_penalty = -0.1
+        if ENABLE_ANTI_GAMING_ESCALATION:
+            prior_false_positives = _count_false_positives(already_found, ground_truth)
+            if prior_false_positives >= 2:
+                fp_penalty = -0.15
+            elif prior_false_positives >= 1:
+                fp_penalty = -0.12
+        breakdown["false_positive"] = fp_penalty
+        return fp_penalty, breakdown
 
     # True positive — base reward
     breakdown["type_match"] = 0.3
@@ -228,6 +292,11 @@ def compute_step_reward(
             breakdown["severity_bonus"] = 0.1
             reward += 0.1
 
+    evidence_bonus = compute_evidence_score(finding)
+    if evidence_bonus:
+        breakdown["evidence_bonus"] = evidence_bonus
+        reward += evidence_bonus
+
     return reward, breakdown
 
 def compute_episode_score(
@@ -238,6 +307,7 @@ def compute_episode_score(
     current_step: int = 0,
     max_steps: int | None = None,
     chain_bonus: float = 0.0,
+    use_precision_scoring: bool = False,
     # Legacy aliases — kept for backward compat with old call sites
     steps_used: int | None = None,
 ) -> float:
@@ -288,5 +358,10 @@ def compute_episode_score(
 
     # Chain bonus (passed from env.py _handle_mark_complete)
     total_reward += chain_bonus
+
+    if use_precision_scoring:
+        precision = true_positive_count / max(1, len(findings))
+        precision_bonus = 0.1 * precision
+        total_reward += precision_bonus
 
     return max(0.0, min(1.0, total_reward / max_possible))

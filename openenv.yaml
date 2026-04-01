@@ -82,6 +82,18 @@ action_space:
         - name: suggested_fix
           type: str
           required: true
+        - name: function
+          type: str
+          required: false
+        - name: data_flow_source
+          type: str
+          required: false
+        - name: sink
+          type: str
+          required: false
+        - name: exploitability_reason
+          type: str
+          required: false
     - name: request_file
       description: "Request to see a hidden file (Tasks 2 and 3)"
       parameters:

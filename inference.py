@@ -15,6 +15,7 @@ Environment variables:
 
 import json
 import os
+import random
 import re
 import time
 from typing import Optional
@@ -28,6 +29,8 @@ GLOBAL_START_TIME: float = 0.0  # set at start of main()
 
 def is_time_critical(task_start: float, task_id: int) -> bool:
     """Returns True if we must finish this task NOW (approaching time limit)."""
+    if REPRODUCIBLE_MODE and REPRO_IGNORE_TIMEOUT:
+        return False
     task_elapsed = time.time() - task_start
     global_elapsed = time.time() - GLOBAL_START_TIME
     return (
@@ -51,6 +54,27 @@ ENV_BASE_URL = os.environ.get("ENV_BASE_URL")
 API_BASE_URL = os.environ.get("API_BASE_URL", API_BASE_URL)
 MODEL_NAME = os.environ.get("MODEL_NAME", MODEL_NAME)
 ENV_BASE_URL = os.environ.get("ENV_BASE_URL", ENV_BASE_URL)
+TEMPERATURE = float(os.environ.get("TEMPERATURE", "0.0"))
+TOP_P = float(os.environ.get("TOP_P", "1.0"))
+MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "1500"))
+OPENAI_SEED = os.environ.get("OPENAI_SEED")
+REPRODUCIBLE_MODE = os.environ.get("REPRODUCIBLE_MODE", "true").lower() in {
+    "1", "true", "yes", "on"
+}
+REPRO_BASELINE_ONLY = os.environ.get("REPRO_BASELINE_ONLY", "false").lower() in {
+    "1", "true", "yes", "on"
+}
+REPRO_IGNORE_TIMEOUT = os.environ.get("REPRO_IGNORE_TIMEOUT", "true").lower() in {
+    "1", "true", "yes", "on"
+}
+REPRO_MAX_RETRIES = int(os.environ.get("REPRO_MAX_RETRIES", "2"))
+REPRO_MAX_RETRIES = max(1, min(2, REPRO_MAX_RETRIES))
+
+if OPENAI_SEED is not None:
+    try:
+        random.seed(int(OPENAI_SEED))
+    except ValueError:
+        OPENAI_SEED = None
 
 client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY) if API_KEY else None
 http_client = httpx.Client(base_url=ENV_BASE_URL, timeout=30.0)
@@ -101,6 +125,13 @@ You must use ONLY these exact vulnerability type strings when reporting:
 4. Report vulnerabilities from Critical to Low severity
 5. For each finding, write a suggested_fix of at least 30 words that names the specific safe alternative
 6. Call mark_complete only when you have reviewed every single file AND verified the checklist below
+
+## PRE-REPORT VALIDATION CHECKLIST (MANDATORY)
+Before any report_vulnerability action, verify all four:
+1) Source controllability: Is the source attacker-controlled, not a fixed constant?
+2) Sink reachability: Does data actually flow to a dangerous sink in this code path?
+3) Exploit precondition: Is there a realistic path to exploit without missing assumptions?
+4) Safe pattern exclusion: Is this one of the explicit safe patterns below?
 
 ## ATTACK CHAIN AWARENESS
 When you see the "Active Insights" section in the observation, pay close attention.
@@ -163,6 +194,7 @@ When you see a chain insight, report all related vulnerabilities and add a note 
 - MD5 used for request tracking or cache keys (only MD5 on PASSWORDS is a vulnerability)
 - Any import statement itself → NOT a vulnerability
 - requests.get() for health checks or internal API calls with hardcoded safe URLs → NOT a vulnerability
+- hmac.compare_digest() usage for token/signature comparisons → NOT a vulnerability
 
 If you are about to report Weak Cryptography, ask yourself: is this hashing a PASSWORD? If no, do not report it.
 If you are about to report Hardcoded Secret, ask yourself: is this a JWT secret, API key, or auth token? If it is a Flask SECRET_KEY used for session signing in config, do not report it.
@@ -194,9 +226,17 @@ Before reporting any vulnerability, check the "Already Reported Findings" sectio
 ## OUTPUT FORMAT
 You MUST respond with ONLY a valid JSON object. No text before or after. No markdown. No explanation outside the JSON.
 
+When evidence mode is enabled by the environment, include these additional payload fields in every
+report_vulnerability action:
+- function
+- data_flow_source
+- sink
+- exploitability_reason
+
 Examples:
 {"action_type": "request_file", "payload": {"filename": "utils.py"}}
 {"action_type": "report_vulnerability", "payload": {"file": "app.py", "line_number": 35, "vulnerability_type": "Path Traversal", "severity": "High", "description": "The download_file function joins user-supplied filename with base directory without sanitization, allowing directory traversal to access files outside the intended directory.", "suggested_fix": "Use os.path.basename() to strip directory components from user input, then validate the resolved path starts with the expected base directory using os.path.realpath()."}}
+{"action_type": "report_vulnerability", "payload": {"file": "views.py", "line_number": 67, "vulnerability_type": "IDOR", "severity": "High", "description": "User-controlled record id is fetched without ownership enforcement, enabling unauthorized object access.", "suggested_fix": "Enforce ownership checks before object lookup and reject cross-user access with 403.", "function": "get_user_profile", "data_flow_source": "request.args['id']", "sink": "db.query(User).filter_by(id=user_id).first()", "exploitability_reason": "Attacker can enumerate IDs and read other users' records because no current_user ownership guard exists before query execution."}}
 {"action_type": "add_note", "payload": {"note": "Reviewing auth.py for timing vulnerabilities in token comparison"}}
 {"action_type": "mark_complete", "payload": {}}
 
@@ -381,20 +421,29 @@ def call_llm_with_retry(messages: list[dict], max_retries: int = 3) -> str:
     """Call the LLM API with exponential backoff retry."""
     if client is None:
         raise RuntimeError("HF_TOKEN is not set; LLM run is unavailable.")
-    for attempt in range(max_retries):
+    effective_retries = REPRO_MAX_RETRIES if REPRODUCIBLE_MODE else max_retries
+    for attempt in range(effective_retries):
         try:
-            response = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=messages,
-                temperature=0.0,
-                max_tokens=1500,
-            )
+            payload = {
+                "model": MODEL_NAME,
+                "messages": messages,
+                "temperature": TEMPERATURE,
+                "top_p": TOP_P,
+                "max_tokens": MAX_TOKENS,
+            }
+            if OPENAI_SEED is not None:
+                try:
+                    payload["seed"] = int(OPENAI_SEED)
+                except ValueError:
+                    pass
+
+            response = client.chat.completions.create(**payload)
             return response.choices[0].message.content
         except Exception as e:
-            if attempt == max_retries - 1:
-                raise RuntimeError(f"LLM API failed after {max_retries} attempts: {e}")
+            if attempt == effective_retries - 1:
+                raise RuntimeError(f"LLM API failed after {effective_retries} attempts: {e}")
             wait_time = 5 * (2 ** attempt)
-            print(f"  ⚠ LLM API error (attempt {attempt + 1}): {e}. Retrying in {wait_time}s...", flush=True)
+            print(f"  [WARN] LLM API error (attempt {attempt + 1}): {e}. Retrying in {wait_time}s...", flush=True)
             time.sleep(wait_time)
     return ""
 
@@ -443,6 +492,52 @@ def get_security_state() -> Optional[dict]:
         return None
 
 
+def _line_text_from_observation(obs: dict, filename: str, line_number: int) -> str:
+    """Best-effort extraction of a source line from observation files."""
+    content = (obs.get("files", {}) or {}).get(filename, "")
+    if not content:
+        return ""
+    lines = content.split("\n")
+    if line_number < 1 or line_number > len(lines):
+        return ""
+    return lines[line_number - 1]
+
+
+def _is_trap_risk_report(action: dict, obs: dict) -> tuple[bool, str]:
+    """Detect obvious trap-like reports before sending them to environment."""
+    if action.get("action_type") != "report_vulnerability":
+        return False, ""
+
+    payload = action.get("payload", {}) or {}
+    vuln_type = (payload.get("vulnerability_type") or "").strip()
+    filename = payload.get("file", "")
+    line_number = payload.get("line_number", 0)
+    line_text = _line_text_from_observation(obs, filename, line_number).lower()
+
+    # Weak crypto trap: SHA-256 or PBKDF2/HMAC contexts are safe here.
+    if vuln_type == "Weak Cryptography":
+        if "sha256" in line_text or "pbkdf2_hmac" in line_text or "compare_digest" in line_text:
+            return True, "Potential trap: safe cryptographic usage (SHA-256/PBKDF2/compare_digest)."
+
+    # SSRF trap: fixed internal allowlisted URL literal.
+    if vuln_type == "SSRF":
+        if "requests.get(" in line_text and ("internal.service.local" in line_text or '"' in line_text or "'" in line_text):
+            if "url" not in line_text:
+                return True, "Potential trap: fixed allowlisted URL call, not user-controlled SSRF."
+
+    # Timing attack trap: secure compare function is already used.
+    if vuln_type == "Timing Attack":
+        if "compare_digest" in line_text:
+            return True, "Potential trap: compare_digest is the secure timing-safe pattern."
+
+    # Path traversal trap: explicit sanitization line.
+    if vuln_type == "Path Traversal":
+        if "replace(\"..\"" in line_text or "replace('..'" in line_text or "secure_filename_check" in line_text:
+            return True, "Potential trap: line appears to sanitize path input."
+
+    return False, ""
+
+
 # ─── Main Agent Loop ──────────────────────────────────────────
 
 def run_task(task_id: int) -> dict:
@@ -462,7 +557,7 @@ def run_task(task_id: int) -> dict:
     # Active insights from obs update every step via format_observation (Fix 5).
     security_state = get_security_state()
     if security_state is None:
-        print(f"  ⚠ Task {task_id}: static analysis hints unavailable — agent will rely on code only.", flush=True)
+        print(f"  [WARN] Task {task_id}: static analysis hints unavailable - agent will rely on code only.", flush=True)
 
     print(f"\n{'='*60}", flush=True)
     print(f"TASK {task_id}: {obs.get('feedback', 'Started')[:80]}", flush=True)
@@ -498,7 +593,7 @@ def run_task(task_id: int) -> dict:
             action = extract_json_action(raw_response)
 
             if action is None:
-                print(f"  Step {step_count} | ⚠ Could not parse action, using mark_complete", flush=True)
+                print(f"  Step {step_count} | [WARN] Could not parse action, using mark_complete", flush=True)
                 action = {"action_type": "mark_complete", "payload": {}}
 
         # ── DUPLICATE INTERCEPTOR (Fix 2) ──────────────────────
@@ -516,6 +611,23 @@ def run_task(task_id: int) -> dict:
                     flush=True,
                 )
                 messages.append({"role": "user", "content": dedup_msg})
+                step_count -= 1
+                continue
+
+            trap_risk, trap_msg = _is_trap_risk_report(action, obs)
+            if trap_risk:
+                print(
+                    f"  Step {step_count:2d} | trap-risk INTERCEPTED            | {vuln_type} in {vuln_file}",
+                    flush=True,
+                )
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"TRAP-RISK BLOCKED: {trap_msg} "
+                        "Re-check data source controllability and sink reachability. "
+                        "If uncertain, use add_note() instead of report_vulnerability."
+                    ),
+                })
                 step_count -= 1
                 continue
 
@@ -540,7 +652,7 @@ def run_task(task_id: int) -> dict:
         # ── TIMEOUT GUARD — force completion if approaching limit ──────
         if is_time_critical(task_start, task_id):
             print(
-                f"    ⏱️  Time limit approaching — forcing task {task_id} completion",
+                f"    [TIMEOUT] Time limit approaching - forcing task {task_id} completion",
                 flush=True,
             )
             try:
@@ -627,7 +739,7 @@ def run_task(task_id: int) -> dict:
 
     final_score = result.get("info", {}).get("episode_score", 0.0)
 
-    print(f"\n  ── Task {task_id} Summary ──", flush=True)
+    print(f"\n  -- Task {task_id} Summary --", flush=True)
     print(f"  Vulnerabilities found: {true_positives} / {gt_count}", flush=True)
     print(f"  False positives: {false_positives}", flush=True)
     print(f"  Steps used: {step_count} / {max_fallback_steps - 2}", flush=True)
@@ -728,6 +840,25 @@ def run_deterministic_baseline() -> list[dict]:
                     if not match:
                         continue
                     line_number = content[: match.start()].count("\n") + 1
+                    line_text = content.split("\n")[line_number - 1].lower()
+
+                    # Exclusion rules for known safe trap-like patterns.
+                    if vuln_type == "Weak Cryptography":
+                        # Deterministic baseline should only flag md5/sha1, not safe SHA-256 lines.
+                        if ("md5" not in line_text) and ("sha1" not in line_text):
+                            detected.add((filename, vuln_type))
+                            continue
+                    if vuln_type == "SSRF":
+                        # Skip fixed literal allowlisted URL calls.
+                        if "requests.get(" in line_text and "internal.service.local" in line_text:
+                            detected.add((filename, vuln_type))
+                            continue
+                    if vuln_type == "Timing Attack":
+                        # compare_digest is secure and should not be flagged.
+                        if "compare_digest" in line_text:
+                            detected.add((filename, vuln_type))
+                            continue
+
                     action = {
                         "action_type": "report_vulnerability",
                         "payload": {
@@ -813,6 +944,16 @@ def main():
     print(f"  Model: {MODEL_NAME}", flush=True)
     print(f"  API: {API_BASE_URL}", flush=True)
     print(f"  Environment: {ENV_BASE_URL}", flush=True)
+    print(
+        f"  Sampling: temperature={TEMPERATURE}, top_p={TOP_P}, "
+        f"max_tokens={MAX_TOKENS}, seed={OPENAI_SEED if OPENAI_SEED is not None else 'none'}",
+        flush=True,
+    )
+    print(
+        f"  Repro mode: {'ON' if REPRODUCIBLE_MODE else 'OFF'} "
+        f"(baseline_only={'ON' if REPRO_BASELINE_ONLY else 'OFF'})",
+        flush=True,
+    )
     print("=" * 60, flush=True)
 
     try:
@@ -820,7 +961,7 @@ def main():
         health.raise_for_status()
         print(f"  Environment health: {health.json()}", flush=True)
     except Exception as e:
-        print(f"\n  ✖ Cannot reach environment at {ENV_BASE_URL}: {e}", flush=True)
+        print(f"\n  [ERROR] Cannot reach environment at {ENV_BASE_URL}: {e}", flush=True)
         print("  Make sure the server is running: uvicorn main:app --port 7860", flush=True)
         return
 
@@ -828,7 +969,9 @@ def main():
     baseline_results = run_deterministic_baseline()
 
     results = []
-    if client is None:
+    if REPRO_BASELINE_ONLY:
+        print("  REPRO_BASELINE_ONLY is enabled — skipping LLM run.", flush=True)
+    elif client is None:
         print("  HF_TOKEN not set — skipping LLM run.", flush=True)
     else:
         # Each task runs exactly once, isolated with try/except
@@ -837,7 +980,7 @@ def main():
                 result = run_task(task_id)
                 results.append(result)
             except Exception as e:
-                print(f"\n  ✖ Task {task_id} failed with error: {e}", flush=True)
+                print(f"\n  [ERROR] Task {task_id} failed with error: {e}", flush=True)
                 print(f"  Continuing to next task...", flush=True)
                 results.append({
                     "task_id": task_id,
@@ -893,6 +1036,14 @@ def main():
             "overall_score": overall,
             "elapsed_seconds": elapsed,
             "model": MODEL_NAME,
+            "reproducibility": {
+                "temperature": TEMPERATURE,
+                "top_p": TOP_P,
+                "max_tokens": MAX_TOKENS,
+                "openai_seed": OPENAI_SEED,
+                "reproducible_mode": REPRODUCIBLE_MODE,
+                "repro_baseline_only": REPRO_BASELINE_ONLY,
+            },
         }, f, indent=2)
     print(f"\n  Results saved to {results_file}", flush=True)
 

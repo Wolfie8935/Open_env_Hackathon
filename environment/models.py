@@ -175,6 +175,10 @@ class Finding(BaseModel):
     severity: str = Field(description="Severity level: Critical, High, Medium, or Low")
     description: str = Field(min_length=10, description="Detailed description of the vulnerability")
     suggested_fix: str = Field(min_length=10, description="Actionable fix recommendation")
+    function: Optional[str] = Field(default=None, description="Function/method where issue is present")
+    data_flow_source: Optional[str] = Field(default=None, description="User-controlled source that reaches sink")
+    sink: Optional[str] = Field(default=None, description="Dangerous operation reached by attacker-controlled data")
+    exploitability_reason: Optional[str] = Field(default=None, description="Why issue is exploitable in current code")
 
     @field_validator("vulnerability_type")
     @classmethod
@@ -187,6 +191,20 @@ class Finding(BaseModel):
     def validate_severity(cls, v: str) -> str:
         """Allow any string for severity."""
         return v
+
+    @field_validator("function", "data_flow_source", "sink", "exploitability_reason")
+    @classmethod
+    def validate_optional_evidence_fields(cls, v: Optional[str]) -> Optional[str]:
+        """If evidence is provided, require meaningful non-placeholder content."""
+        if v is None:
+            return v
+        cleaned = v.strip()
+        if len(cleaned) < 10:
+            raise ValueError("Evidence fields must be at least 10 characters long")
+        placeholders = {"n/a", "na", "none", "unknown", "tbd"}
+        if cleaned.lower() in placeholders:
+            raise ValueError("Evidence fields cannot use placeholder values")
+        return cleaned
 
 
 class Observation(BaseModel):
@@ -211,6 +229,24 @@ class ReportVulnerabilityAction(BaseModel):
     severity: str
     description: str = Field(min_length=10)
     suggested_fix: str = Field(min_length=10)
+    function: Optional[str] = None
+    data_flow_source: Optional[str] = None
+    sink: Optional[str] = None
+    exploitability_reason: Optional[str] = None
+
+    @field_validator("function", "data_flow_source", "sink", "exploitability_reason")
+    @classmethod
+    def validate_optional_evidence_fields(cls, v: Optional[str]) -> Optional[str]:
+        """Keep old payloads compatible; validate only when field is provided."""
+        if v is None:
+            return v
+        cleaned = v.strip()
+        if len(cleaned) < 10:
+            raise ValueError("Evidence fields must be at least 10 characters long")
+        placeholders = {"n/a", "na", "none", "unknown", "tbd"}
+        if cleaned.lower() in placeholders:
+            raise ValueError("Evidence fields cannot use placeholder values")
+        return cleaned
 
 
 class RequestFileAction(BaseModel):

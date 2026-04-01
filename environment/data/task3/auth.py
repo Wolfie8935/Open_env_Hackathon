@@ -103,6 +103,11 @@ def hash_password(password: str, salt: Optional[str] = None) -> tuple[str, str]:
     return hashed.hex(), salt
 
 
+def secure_api_signature(message: str, api_secret: str) -> str:
+    """SAFE TRAP: HMAC-SHA256 signature for integrity verification."""
+    return hmac.new(api_secret.encode(), message.encode(), hashlib.sha256).hexdigest()
+
+
 # --- GROUND TRUTH ---
 GROUND_TRUTH = [
     {

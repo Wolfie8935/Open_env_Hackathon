@@ -58,7 +58,7 @@ The agent can take one of 4 discrete actions per step:
 
 | Action | Parameters | Description |
 |--------|-----------|-------------|
-| `report_vulnerability` | `file`, `line_number`, `vulnerability_type`, `severity`, `description`, `suggested_fix` | Report a found vulnerability with type, exact line, severity, and fix |
+| `report_vulnerability` | `file`, `line_number`, `vulnerability_type`, `severity`, `description`, `suggested_fix` (+ optional: `function`, `data_flow_source`, `sink`, `exploitability_reason`) | Report a found vulnerability with type, exact line, severity, and fix. Optional evidence fields are required only when evidence mode is enabled. |
 | `request_file` | `filename` | Request to see a hidden file not initially visible |
 | `mark_complete` | *(none)* | Signal that the security scan is complete |
 | `add_note` | `note` | Add a reasoning note (contributes to scoring in Task 3) |
@@ -177,14 +177,14 @@ Step 10 | mark_complete  | Score: 1.000 (7/7 found, 0 FP, chain bonus: +0.08, ea
 
 ## Baseline Scores
 
-### LLM Agent (Llama 3.1 70B via NVIDIA NIM) — after Tier 1 + Tier 2 fixes
+### LLM Agent (Llama 3.1 70B via NVIDIA NIM) — latest measured run
 
 | Task | Score | Findings | False Positives | Steps Used |
 |------|-------|----------|-----------------|------------|
-| Task 1 (Easy) | 0.967 | 3/3 | 0 | 4 |
-| Task 2 (Medium) | 0.840 | 5/5 | 0 | 10 |
-| Task 3 (Hard) | 0.920 | 7/7 | 0 | 18 |
-| **Overall** | **0.909** | — | — | — |
+| Task 1 (Easy) | 1.000 | 3/3 | 2 | 7 |
+| Task 2 (Medium) | 0.940 | 5/5 | 1 | 9 |
+| Task 3 (Hard) | 0.869 | 7/7 | 1 | 12 |
+| **Overall** | **0.936** | — | — | — |
 
 ### Rule-Based Deterministic Baseline (no LLM, zero API calls)
 
@@ -192,12 +192,39 @@ The environment ships with a deterministic regex scanner to prove discriminabili
 
 | Task | Score | Notes |
 |------|-------|-------|
-| Task 1 | 0.300 | Finds SQL injection pattern, misses eval context |
-| Task 2 | 0.240 | Misses CORS + auth combination |
-| Task 3 | 0.200 | Misses severity, timing attack, mass assignment |
-| **Overall** | **0.247** | |
+| Task 1 | 1.000 | Over-reports decoy types but still clears all 3 findings |
+| Task 2 | 0.400 | Captures subset of true patterns; misses several chain-linked signals |
+| Task 3 | 0.738 | Better coverage than Task 2, but weaker precision than LLM |
+| **Overall** | **0.713** | |
 
-**Gap of ~0.66** between deterministic baseline and LLM agent demonstrates the environment meaningfully rewards reasoning, not just pattern matching.
+**Gap of +0.224** (LLM 0.936 vs deterministic 0.713) demonstrates the environment still rewards stronger reasoning and trajectory control, especially on medium/hard tasks.
+
+Results above were produced with trap/precision/anti-gaming settings enabled in `environment/config.py` during evaluation.
+
+## Active Feature Flags (Current Project Setup)
+
+Current run mode in `environment/config.py`:
+
+- `ENABLE_EVIDENCE_MODE = False`
+- `ENABLE_ADVERSARIAL_TRAPS = True`
+- `ENABLE_PRECISION_SCORING = True`
+- `ENABLE_ANTI_GAMING_ESCALATION = True`
+
+What this means:
+- Adversarial safe-but-suspicious traps are active.
+- Precision-aware episode scoring is active.
+- Escalating false-positive penalties are active.
+- Strict evidence-required mode is currently disabled.
+
+## Trap-Aware Enhancements
+
+The environment includes intentional safe decoys to penalize weak pattern matching:
+
+- **Easy (Task 1):** safe SHA-256/helper comparison patterns.
+- **Medium (Task 2):** fixed allowlisted request + safe HMAC helper patterns.
+- **Hard (Task 3):** safe signature/helper code paths around auth/middleware.
+
+Inference includes deterministic trap interception in `inference.py` to reduce avoidable false positives before an action is sent.
 
 ## Agent Failure Modes
 
@@ -273,6 +300,13 @@ MODEL_NAME=<your_model_name>
 ENV_BASE_URL=http://localhost:7860
 ```
 
+The inference runner loads these from `.env` using `python-dotenv`.  
+For reproducible submissions, treat `.env` values as the source of truth for:
+- `API_BASE_URL`
+- `MODEL_NAME`
+- `ENV_BASE_URL`
+- `HF_TOKEN`
+
 ### Local Setup
 
 ```bash
@@ -328,9 +362,9 @@ python inference.py
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `HF_TOKEN` | Yes | — | API key for the LLM provider |
-| `API_BASE_URL` | No | `https://integrate.api.nvidia.com/v1` | Base URL for the LLM API |
-| `MODEL_NAME` | No | `meta/llama-3.1-70b-instruct` | Model identifier |
-| `ENV_BASE_URL` | No | `http://localhost:7860` | Environment server URL |
+| `API_BASE_URL` | Yes (for reproducible submissions) | from `.env` (fallback exists for local dev) | Base URL for the LLM API |
+| `MODEL_NAME` | Yes (for reproducible submissions) | from `.env` (fallback exists for local dev) | Model identifier |
+| `ENV_BASE_URL` | Yes (for reproducible submissions) | from `.env` (fallback exists for local dev) | Environment server URL |
 
 ## API Reference
 

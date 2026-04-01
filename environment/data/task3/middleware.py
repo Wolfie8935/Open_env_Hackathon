@@ -140,6 +140,12 @@ class RateLimiter:
         self._requests.pop(client_id, None)
 
 
+def parse_safe_xml_string(xml_text: str) -> dict:
+    """SAFE TRAP: uses JSON conversion path; no XML parser invocation here."""
+    data = {"payload": xml_text, "validated": True}
+    return data
+
+
 # --- GROUND TRUTH ---
 GROUND_TRUTH = [
     {

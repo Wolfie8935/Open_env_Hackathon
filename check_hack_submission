@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""
+Hackathon pre-submission checker for OpenEnv Security Scanner.
+
+Usage:
+  python check_hack_submission
+  python check_hack_submission --space-url https://your-space.hf.space
+  python check_hack_submission --skip-inference
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Tuple
+
+
+REQUIRED_FILES = [
+    "openenv.yaml",
+    "inference.py",
+    "Dockerfile",
+    "README.md",
+    "main.py",
+]
+
+REQUIRED_ENV_VARS = ["HF_TOKEN", "API_BASE_URL", "MODEL_NAME"]
+
+
+def run_cmd(cmd: list[str], cwd: Path, timeout_s: int = 1200) -> Tuple[int, str]:
+    """Run a command and return (exit_code, combined_output)."""
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+            env=os.environ.copy(),
+        )
+        return result.returncode, result.stdout
+    except subprocess.TimeoutExpired:
+        return 124, f"Timeout after {timeout_s}s: {' '.join(cmd)}"
+
+
+def print_check(name: str, ok: bool, detail: str = "") -> None:
+    status = "PASS" if ok else "FAIL"
+    print(f"[{status}] {name}")
+    if detail:
+        print(f"       {detail}")
+
+
+def ensure_env_loaded(repo: Path) -> None:
+    """Load .env file values into process env (non-destructive)."""
+    env_file = repo / ".env"
+    if not env_file.exists():
+        return
+
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'").strip('"')
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Check OpenEnv hack submission readiness.")
+    parser.add_argument("--space-url", type=str, default="", help="Optional HF Space URL to ping /reset.")
+    parser.add_argument("--skip-inference", action="store_true", help="Skip running inference.py.")
+    args = parser.parse_args()
+
+    repo = Path(__file__).resolve().parent
+    print("=== OpenEnv Hack Submission Checker ===")
+    print(f"Repo: {repo}")
+
+    ensure_env_loaded(repo)
+
+    failed = 0
+
+    # 1) Required files
+    missing = [f for f in REQUIRED_FILES if not (repo / f).exists()]
+    ok = len(missing) == 0
+    print_check("Required submission files present", ok, "" if ok else f"Missing: {missing}")
+    failed += 0 if ok else 1
+
+    # 2) Required env vars
+    missing_env = [k for k in REQUIRED_ENV_VARS if not os.environ.get(k)]
+    ok = len(missing_env) == 0
+    print_check("Required environment variables", ok, "" if ok else f"Missing: {missing_env}")
+    failed += 0 if ok else 1
+
+    # 3) pytest
+    rc, out = run_cmd([sys.executable, "-m", "pytest", "tests/", "-q"], repo, timeout_s=300)
+    ok = rc == 0
+    print_check("Unit tests (pytest)", ok)
+    if not ok:
+        print(out[-1200:])
+    failed += 0 if ok else 1
+
+    # 4) openenv validate
+    if shutil.which("openenv"):
+        rc, out = run_cmd(["openenv", "validate"], repo, timeout_s=180)
+    else:
+        # Fallback to uv run for local project workflows
+        rc, out = run_cmd(["uv", "run", "openenv", "validate"], repo, timeout_s=240)
+    ok = rc == 0
+    print_check("OpenEnv validate", ok)
+    if not ok:
+        print(out[-1200:])
+    failed += 0 if ok else 1
+
+    # 5) Docker build
+    docker_path = shutil.which("docker")
+    if not docker_path:
+        print_check("Docker available", False, "docker command not found")
+        failed += 1
+    else:
+        rc, out = run_cmd(["docker", "build", "-t", "security-scanner-submission-check", "."], repo, timeout_s=900)
+        ok = rc == 0
+        print_check("Docker build", ok)
+        if not ok:
+            print(out[-1200:])
+        failed += 0 if ok else 1
+
+    # 6) Optional space ping
+    if args.space_url:
+        url = args.space_url.rstrip("/") + "/reset"
+        if shutil.which("curl"):
+            null_sink = "NUL" if os.name == "nt" else "/dev/null"
+            rc, out = run_cmd(
+                ["curl", "-s", "-o", null_sink, "-w", "%{http_code}", "-X", "POST", "-H", "Content-Type: application/json", "-d", "{}", url],
+                repo,
+                timeout_s=45,
+            )
+            ok = rc == 0 and out.strip() == "200"
+            print_check("HF Space /reset ping", ok, f"HTTP={out.strip()}")
+            failed += 0 if ok else 1
+        else:
+            print_check("HF Space /reset ping", False, "curl command not found")
+            failed += 1
+
+    # 7) Inference runtime + completion
+    if args.skip_inference:
+        print_check("Inference run", True, "Skipped by --skip-inference")
+    else:
+        # Keep reproducibility mode and allow retries but avoid hard timeout-force-complete.
+        env = os.environ.copy()
+        env.setdefault("REPRODUCIBLE_MODE", "true")
+        env.setdefault("REPRO_MAX_RETRIES", "2")
+        env.setdefault("REPRO_IGNORE_TIMEOUT", "true")
+        try:
+            proc = subprocess.run(
+                [sys.executable, "inference.py"],
+                cwd=str(repo),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=1300,  # 21m 40s hard cap for checker process
+                check=False,
+                env=env,
+            )
+            ok = proc.returncode == 0
+            print_check("Inference script completes", ok)
+            if not ok:
+                print(proc.stdout[-1500:])
+                failed += 1
+            else:
+                # Soft runtime signal from output
+                tail = proc.stdout[-2000:]
+                print("       Completed. Check output for 'Time elapsed'.")
+                if "Time elapsed:" in tail:
+                    line = [l for l in tail.splitlines() if "Time elapsed:" in l][-1]
+                    print(f"       {line.strip()}")
+        except subprocess.TimeoutExpired:
+            print_check("Inference script completes", False, "Checker timeout (>1300s)")
+            failed += 1
+
+    print("\n=== Summary ===")
+    if failed == 0:
+        print("All checks passed. Submission looks ready.")
+        return 0
+    print(f"{failed} check(s) failed. Resolve before submission.")
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+

@@ -10,10 +10,12 @@ from environment.models import (
     ActionType,
     Finding,
     Observation,
+    ReportVulnerabilityAction,
     StepResult,
 )
 from environment.reward import compute_episode_score, compute_step_reward
 from environment.state_manager import StateManager
+from environment.config import ENABLE_EVIDENCE_MODE, ENABLE_PRECISION_SCORING
 
 from environment.security_analysis import (
     build_dependency_graph,
@@ -135,6 +137,7 @@ class SecurityScannerEnv:
             notes=self.state_manager.notes,
             current_step=self.state_manager.step_number,
             max_steps=self.active_task.max_steps,
+            use_precision_scoring=ENABLE_PRECISION_SCORING,
         )
 
         clamped_reward = max(-0.5, min(0.6, reward))
@@ -224,14 +227,36 @@ class SecurityScannerEnv:
         }
 
     def _handle_report(self, payload: dict):
+        if ENABLE_EVIDENCE_MODE:
+            report = ReportVulnerabilityAction(**payload)
+        else:
+            # Backward-compatible path: accepts old payloads as-is.
+            report = ReportVulnerabilityAction.model_construct(**payload)
+
         finding = Finding(
-            file=payload.get("file"),
-            line_number=payload.get("line_number"),
-            vulnerability_type=payload.get("vulnerability_type"),
-            severity=payload.get("severity", "Medium"),
-            description=payload.get("description", ""),
-            suggested_fix=payload.get("suggested_fix", ""),
+            file=report.file,
+            line_number=report.line_number,
+            vulnerability_type=report.vulnerability_type,
+            severity=report.severity,
+            description=report.description,
+            suggested_fix=report.suggested_fix,
+            function=report.function,
+            data_flow_source=report.data_flow_source,
+            sink=report.sink,
+            exploitability_reason=report.exploitability_reason,
         )
+
+        if ENABLE_EVIDENCE_MODE:
+            evidence_fields = [
+                finding.function,
+                finding.data_flow_source,
+                finding.sink,
+                finding.exploitability_reason,
+            ]
+            if any(v is None or not str(v).strip() for v in evidence_fields):
+                raise ValueError(
+                    "Evidence mode requires function, data_flow_source, sink, and exploitability_reason"
+                )
 
         reward, breakdown = compute_step_reward(
             finding,
@@ -308,6 +333,7 @@ class SecurityScannerEnv:
             current_step=self.state_manager.step_number,
             max_steps=self.active_task.max_steps,
             chain_bonus=chain_bonus,
+            use_precision_scoring=ENABLE_PRECISION_SCORING,
         )
 
         return (
@@ -333,6 +359,7 @@ class SecurityScannerEnv:
             notes=self.state_manager.notes,
             current_step=self.state_manager.step_number,
             max_steps=self.active_task.max_steps,
+            use_precision_scoring=ENABLE_PRECISION_SCORING,
         )
 
         return StepResult(

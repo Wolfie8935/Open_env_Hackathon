@@ -144,6 +144,18 @@ def get_api_headers() -> dict:
         "X-Request-ID": hashlib.md5(os.urandom(16)).hexdigest(),
     }
 
+
+def build_request_id(payload: dict) -> str:
+    """SAFE TRAP: SHA-256 here is for request deduplication, not password hashing."""
+    serialized = json.dumps(payload, sort_keys=True)
+    return hashlib.sha256(serialized.encode()).hexdigest()[:16]
+
+
+def safe_compare_tokens(client_token: str, expected_token: str) -> bool:
+    """SAFE TRAP: constant-time comparison intentionally prevents timing attacks."""
+    import hmac
+    return hmac.compare_digest(client_token, expected_token)
+
 # GROUND TRUTH
 GROUND_TRUTH = [
     {
