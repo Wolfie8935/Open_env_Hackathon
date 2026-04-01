@@ -130,24 +130,18 @@ All Task 3 files are now revealed immediately during environment reset.
         for filename in list(task.files.keys()):
             self.state_manager.reveal_file(filename)
 
-### Result (Updated)
+### Result
 
   Task     File Visibility
   -------- -------------------
   Task 1   Normal
   Task 2   Normal
-  Task 3   All files previewed; full file requires request
+  Task 3   All files visible
 
 ### Impact
 
--   Preserves exploration pressure while still giving broad situational awareness
--   Forces explicit file reveal actions for deeper analysis
-
-### Final Runtime Behavior
-
-- Task 3 starts with preview snippets for all files.
-- Agents must call `request_file` to unlock full source for each file.
-- This keeps file-exploration mechanics active and deterministic.
+-   Removes 3--5 wasted discovery steps
+-   Focuses the agent on vulnerability analysis
 
 ------------------------------------------------------------------------
 
@@ -414,46 +408,3 @@ These parameters must be passed during both terminal scoring calls.
 
   task2/app.py                        Realistic developer noise
   -----------------------------------------------------------------------
-
-# Exploit-chain detection
-	•	Added predefined multi-step attack chains across files so the system recognizes when vulnerabilities combine into real exploit paths.
-	•	The environment now tracks discovered vulnerabilities and rewards completion of these chains to encourage reasoning instead of isolated bug detection.
-
-# Chain-based reward system
-	•	Introduced bonus rewards when agents discover full exploit chains such as RCE or account-takeover paths.
-	•	Added precision gating so chain rewards only apply when the agent’s findings are mostly correct, preventing reward gaming.
-
-Implementation note:
-	•	Chain bonus is now applied consistently in normal scoring, `mark_complete`, and terminal auto-complete paths.
-
-# Cascading discovery hints
-	•	Implemented a trigger system where discovering one vulnerability unlocks hints pointing to related files or weaknesses.
-	•	This simulates real security investigation workflows and guides agents toward deeper analysis.
-
-# Static analysis hint layer
-	•	Added lightweight regex-based static scan hints that highlight suspicious lines when files are revealed.
-	•	This provides deterministic guidance without external tools or LLM calls.
-
-# File exploration mechanics
-	•	Enhanced tasks so agents must request hidden or partially revealed files to continue analysis.
-	•	This forces exploration and prevents simple full-code scanning.
-
-# Risk-prioritized triage evaluation
-	•	Added scoring that rewards agents for reporting vulnerabilities in severity order (critical → high → medium → low).
-	•	Introduced task metadata encouraging agents to prioritize the most impactful issues first.
-
-# Reasoning-based grading rubric
-	•	Expanded grading to evaluate detection accuracy, severity correctness, fix specificity, and quality of remediation suggestions.
-	•	This rewards deeper security reasoning instead of just identifying vulnerability types.
-
-# Semantic vulnerability matching
-	•	Added synonym handling so different but valid vulnerability terms (e.g., SQLi vs SQL Injection) are recognized as correct.
-	•	This makes grading fairer and reduces false penalties for wording differences.
-
-# Anti-gaming safeguards
-	•	Added false-positive penalties and precision checks to discourage agents from spamming findings.
-	•	Chain bonuses and rewards only apply when the agent maintains reasonable accuracy.
-
-# Deterministic evaluation design
-	•	Ensured the entire grading and analysis pipeline uses pure Python logic without randomness or external APIs.
-	•	This guarantees reproducible results where identical agent behavior always produces the same score.

@@ -69,6 +69,10 @@ class SecurityScannerEnv:
             self._exploitability_results = {}
             self._attack_chains = []
 
+        if task_id == 3:
+            for filename in list(task.files.keys()):
+                self.state_manager.reveal_file(filename)
+
         self._initialized = True
 
         return Observation(
@@ -133,7 +137,6 @@ class SecurityScannerEnv:
             notes=self.state_manager.notes,
             current_step=self.state_manager.step_number,
             max_steps=self.active_task.max_steps,
-            chain_bonus=self.state_manager.compute_chain_bonuses()[0],
             use_precision_scoring=ENABLE_PRECISION_SCORING,
         )
 
@@ -348,8 +351,6 @@ class SecurityScannerEnv:
         return "Empty note ignored."
 
     def _terminal_result(self, feedback):
-        chain_bonus, chains = self.state_manager.compute_chain_bonuses()
-        self.state_manager.chains_completed = chains
 
         episode_score = compute_episode_score(
             self.state_manager.findings,
@@ -358,7 +359,6 @@ class SecurityScannerEnv:
             notes=self.state_manager.notes,
             current_step=self.state_manager.step_number,
             max_steps=self.active_task.max_steps,
-            chain_bonus=chain_bonus,
             use_precision_scoring=ENABLE_PRECISION_SCORING,
         )
 

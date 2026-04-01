@@ -68,5 +68,4 @@ class Grader2(BaseGrader):
 
         fp_penalty = fp_count * 0.1
 
-        score = (coverage * 1.1) - fp_penalty
-        return max(0.0, min(1.0, score))
+        return max(0.0, min(1.0, coverage - fp_penalty))
