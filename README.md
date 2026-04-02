@@ -409,25 +409,34 @@ Expected response:
 ## Project Structure
 
 ```
-├── .env                    # API key (HF_TOKEN)
-├── requirements.txt        # Dependencies (pinned)
-├── openenv.yaml            # OpenEnv configuration
-├── Dockerfile              # Container deployment
-├── main.py                 # FastAPI server (port 7860)
-├── inference.py            # AI agent loop (LLM + deterministic baseline)
+├── .env                         # Local runtime variables / API key
+├── pyproject.toml               # Project metadata and dependency spec
+├── uv.lock                      # Locked dependency graph (uv)
+├── requirements.txt             # Pip-compatible dependency list
+├── openenv.yaml                 # OpenEnv configuration
+├── Dockerfile                   # Container deployment
+├── main.py                      # FastAPI server entrypoint (port 7860)
+├── server/
+│   └── app.py                   # Alternative ASGI server entrypoint
+├── inference.py                 # LLM + deterministic baseline runner
+├── check_hack_submission        # End-to-end submission validation script
+├── changes.md                   # Primary change log
+├── changes_additional.md        # Additional enhancement notes (incl. triage)
 ├── environment/
-│   ├── models.py           # Pydantic models & enums
-│   ├── env.py              # SecurityScannerEnv (reset/step/state)
-│   ├── state_manager.py    # Mutable episode state + cascading insights
-│   ├── reward.py           # Pure reward computation
-│   ├── security_analysis.py # Static analysis, dataflow, attack chain detection
+│   ├── config.py                # Feature flags and runtime toggles
+│   ├── models.py                # Pydantic models & enums
+│   ├── env.py                   # SecurityScannerEnv (reset/step/state)
+│   ├── state_manager.py         # Episode state + cached triage/coverage metrics
+│   ├── reward.py                # Reward and episode score computation
+│   ├── chain_objective.py       # Attack-chain objective helpers
 │   ├── data/
-│   │   ├── task1/          # 1 file, 3 vulns (easy)
-│   │   ├── task2/          # 4 files, 5 vulns (medium)
-│   │   └── task3/          # 5 files, 7 vulns (hard)
-│   ├── tasks/              # Task implementations
-│   └── graders/            # 3 grading strategies (detection, rubric, reasoning)
-└── tests/                  # Unit tests (pytest)
+│   │   ├── task1/               # 1 file, 3 vulns (easy)
+│   │   ├── task2/               # 4 files, 5 vulns (medium)
+│   │   └── task3/               # 5 files, 7 vulns (hard)
+│   ├── tasks/                   # Task implementations
+│   ├── graders/                 # 3 grading strategies
+│   └── security_analysis/       # Static/dataflow/chain/exploitability analyzers
+└── tests/                       # Unit tests (pytest)
 ```
 
 ## License
