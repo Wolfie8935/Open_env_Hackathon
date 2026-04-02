@@ -408,3 +408,80 @@ These parameters must be passed during both terminal scoring calls.
 
   task2/app.py                        Realistic developer noise
   -----------------------------------------------------------------------
+
+------------------------------------------------------------------------
+
+# Tier 4 --- Runtime Optimizations (Behavior Identical)
+
+## Fix A11 --- Event-Driven Metric Caching
+
+**Files Modified:**\
+`environment/state_manager.py`, `environment/env.py`
+
+### Problem
+
+Several scoring and evaluation metrics were recomputed from scratch on **every**
+`step()`, including neutral actions like `add_note` and `request_file`.
+This introduced avoidable \(O(n)\) and \(O(n^2)\) work as the findings list grew.
+
+### Changes
+
+- Metrics now update **only when new findings are recorded** and when `step_number`
+  changes (for step-efficiency), instead of rescanning historical findings every step.
+- `StateManager` maintains cached values and exposes O(1) getters:
+  - `triage_score_cache`
+  - `severity_coverage_cache`
+  - `compute_episode_score_cached(...)`
+
+### Impact
+
+- Removes repeated full-history rescans on every step.
+- Keeps rewards, scores, and observations **100% identical** while reducing overhead.
+
+------------------------------------------------------------------------
+
+## Fix A12 --- Incremental Triage + Severity Coverage
+
+**Files Modified:**\
+`environment/state_manager.py`, `environment/env.py`
+
+### Problem
+
+- Triage scoring recalculated by iterating and pairwise comparing historical true positives.
+- Severity coverage repeatedly scanned historical findings to rebuild per-severity counts.
+
+### Changes
+
+- Severity coverage is maintained as running counters per GT severity and formatted into
+  `severity_coverage_cache` (Critical/High/Medium/Low) **only when a matched true positive is added**.
+- Triage score is computed from running totals/counters:
+  - weighted recall (GT severity weights)
+  - exact prioritization quality (incremental pair counting)
+  - step efficiency (updated when steps advance)
+
+### Impact
+
+- Eliminates repeated \(O(n)\)/\(O(n^2)\) triage work from step-time.
+- Preserves identical triage outputs for the same action sequence.
+
+------------------------------------------------------------------------
+
+## Fix A13 --- Cached Live Chain Status
+
+**Files Modified:**\
+`environment/state_manager.py`, `environment/env.py`
+
+### Problem
+
+`live_chain_status` was rebuilt every step by recomputing all attack-chain progress from scratch.
+
+### Changes
+
+- `live_chain_status` is cached inside `StateManager` and recomputed only when a true positive
+  updates `true_positive_keys` (i.e., when chain progress can actually change).
+- Observation schema remains unchanged; the environment simply reads the cached list.
+
+### Impact
+
+- Removes redundant per-step chain recomputation.
+- Maintains identical chain-progress reporting and rewards.
