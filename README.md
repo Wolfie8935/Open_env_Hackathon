@@ -179,12 +179,12 @@ Step 10 | mark_complete  | Score: 1.000 (7/7 found, 0 FP, chain bonus: +0.08, ea
 
 ### LLM Agent (Llama 3.1 70B via NVIDIA NIM) — latest measured run
 
-| Task | Score | Findings | False Positives | Steps Used |
-|------|-------|----------|-----------------|------------|
-| Task 1 (Easy) | 1.000 | 3/3 | 2 | 7 |
-| Task 2 (Medium) | 0.940 | 5/5 | 1 | 9 |
-| Task 3 (Hard) | 0.869 | 7/7 | 1 | 12 |
-| **Overall** | **0.936** | — | — | — |
+| Task | Score | Findings | False Positives | Steps Used | Triage Score |
+|------|-------|----------|-----------------|------------|--------------|
+| Task 1 (Easy) | 1.000 | 3/3 | 0 | 6 | — |
+| Task 2 (Medium) | 1.000 | 5/5 | 0 | 8 | 0.700 |
+| Task 3 (Hard) | 0.937 | 7/7 | 1 | 11 | 0.714 |
+| **Overall** | **0.979** | — | — | — | — |
 
 ### Rule-Based Deterministic Baseline (no LLM, zero API calls)
 
@@ -192,12 +192,14 @@ The environment ships with a deterministic regex scanner to prove discriminabili
 
 | Task | Score | Notes |
 |------|-------|-------|
-| Task 1 | 1.000 | Over-reports decoy types but still clears all 3 findings |
-| Task 2 | 0.400 | Captures subset of true patterns; misses several chain-linked signals |
-| Task 3 | 0.738 | Better coverage than Task 2, but weaker precision than LLM |
-| **Overall** | **0.713** | |
+| Task 1 | 1.000 | Matches all easy-task findings |
+| Task 2 | 0.440 | Captures subset of true patterns; misses several chain-linked signals |
+| Task 3 | 0.759 | Better coverage than Task 2, but weaker precision than LLM |
+| **Overall** | **0.733** | |
 
-**Gap of +0.224** (LLM 0.936 vs deterministic 0.713) demonstrates the environment still rewards stronger reasoning and trajectory control, especially on medium/hard tasks.
+**Gap of +0.246** (LLM 0.979 vs deterministic 0.733) demonstrates the environment still rewards stronger reasoning and trajectory control, especially on medium/hard tasks.
+
+Sampling used for this run: `temperature=0.0`, `top_p=1.0`, `max_tokens=1500`, `seed=42`.
 
 Results above were produced with trap/precision/anti-gaming settings enabled in `environment/config.py` during evaluation.
 

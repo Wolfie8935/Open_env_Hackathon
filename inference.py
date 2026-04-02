@@ -57,7 +57,7 @@ ENV_BASE_URL = os.environ.get("ENV_BASE_URL", ENV_BASE_URL)
 TEMPERATURE = float(os.environ.get("TEMPERATURE", "0.0"))
 TOP_P = float(os.environ.get("TOP_P", "1.0"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "1500"))
-OPENAI_SEED = os.environ.get("OPENAI_SEED")
+OPENAI_SEED = os.environ.get("OPENAI_SEED", "42")
 REPRODUCIBLE_MODE = os.environ.get("REPRODUCIBLE_MODE", "true").lower() in {
     "1", "true", "yes", "on"
 }
