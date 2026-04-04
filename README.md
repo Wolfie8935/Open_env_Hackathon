@@ -12,7 +12,7 @@ tags:
   - code-review
   - vulnerability-detection
   - llm-evaluation
-short_description: "OpenEnv environment for AI security code auditing — 3 tasks, 15 vulnerability types, cascading discovery mechanics"
+short_description: "OpenEnv security audit: 3 tasks, RL agents, graded 0-1."
 ---
 
 # Security Vulnerability Scanner
