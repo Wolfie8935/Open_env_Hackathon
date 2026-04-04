@@ -1,33 +1,25 @@
-"""OpenEnv CLI expects `models.py` at the environment root; definitions live in `environment.models`."""
+# models.py (root level - for openenv pip install compatibility)
 
 from environment.models import (
     Action,
-    ActionType,
-    AddNoteAction,
-    EpisodeState,
-    Finding,
-    MarkCompleteAction,
     Observation,
-    ReportVulnerabilityAction,
-    RequestFileAction,
-    Severity,
     StepResult,
-    TaskInfo,
+    Finding,
     VulnerabilityType,
+    Severity,
+    ActionType,
+    TaskInfo,
+    EpisodeState,
 )
 
 __all__ = [
     "Action",
-    "ActionType",
-    "AddNoteAction",
-    "EpisodeState",
-    "Finding",
-    "MarkCompleteAction",
-    "Observation",
-    "ReportVulnerabilityAction",
-    "RequestFileAction",
-    "Severity",
+    "Observation", 
     "StepResult",
-    "TaskInfo",
+    "Finding",
     "VulnerabilityType",
+    "Severity",
+    "ActionType",
+    "TaskInfo",
+    "EpisodeState",
 ]

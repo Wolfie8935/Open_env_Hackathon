@@ -1,3 +1,4 @@
+spec_version: 1  
 name: security-vulnerability-scanner
 version: "1.0.0"
 description: "OpenEnv environment where an AI agent acts as a security code auditor, scanning Python codebases to identify, classify, and fix security vulnerabilities across three tasks of increasing difficulty."

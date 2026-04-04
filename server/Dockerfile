@@ -1,4 +1,3 @@
-# Kept in sync with repo-root Dockerfile for `openenv push` (CLI moves this to root when uploading).
 FROM python:3.11-slim
 
 WORKDIR /app

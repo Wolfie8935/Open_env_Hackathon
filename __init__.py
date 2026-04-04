@@ -1,5 +1,24 @@
-"""Security Vulnerability Scanner OpenEnv — root package marker for OpenEnv CLI (`openenv push`)."""
+# __init__.py
+from environment.models import (
+    Action,
+    Observation, 
+    StepResult,
+    Finding,
+    VulnerabilityType,
+    Severity,
+    ActionType,
+    TaskInfo,
+    EpisodeState,
+)
 
-from .client import SecurityScannerEnvClient
-
-__all__ = ["SecurityScannerEnvClient"]
+__all__ = [
+    "Action",
+    "Observation",
+    "StepResult", 
+    "Finding",
+    "VulnerabilityType",
+    "Severity",
+    "ActionType",
+    "TaskInfo",
+    "EpisodeState",
+]

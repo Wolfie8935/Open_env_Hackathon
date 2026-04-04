@@ -1,56 +1,58 @@
-"""
-HTTP client for this environment's REST API (same contract as `inference.py`).
+# client.py
+import httpx
+from environment.models import Action, Observation, StepResult, TaskInfo
 
-OpenEnv CLI `openenv push` requires a root `client.py`; the hackathon agent uses
-`httpx` in `inference.py` — this module is a small `requests`-based helper for
-tools that expect a dedicated client class.
-"""
-
-from __future__ import annotations
-
-from typing import Any, Dict, Optional
-
-import requests
-
-
-class SecurityScannerEnvClient:
-    """Thin client for POST /reset, POST /step, GET /state."""
-
-    def __init__(
-        self,
-        base_url: str,
-        *,
-        timeout: float = 120.0,
-        default_headers: Optional[Dict[str, str]] = None,
-    ) -> None:
-        self._base = base_url.rstrip("/")
-        self._timeout = float(timeout)
-        self._http = requests.Session()
-        if default_headers:
-            self._http.headers.update(default_headers)
-
-    def reset(self, task_id: int = 1) -> Dict[str, Any]:
-        r = self._http.post(
-            f"{self._base}/reset",
-            json={"task_id": int(task_id)},
-            timeout=self._timeout,
+class SecurityScannerClient:
+    """
+    HTTP client for the Security Vulnerability Scanner environment.
+    Install: pip install git+https://huggingface.co/spaces/USERNAME/security-scanner
+    Usage:
+        client = SecurityScannerClient("https://your-space.hf.space")
+        obs = client.reset(task_id=1)
+        result = client.step(action)
+    """
+    
+    def __init__(self, base_url: str = "http://localhost:7860", timeout: int = 60):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self._client = httpx.Client(timeout=timeout)
+    
+    def reset(self, task_id: int = 1) -> Observation:
+        resp = self._client.post(
+            f"{self.base_url}/reset",
+            json={"task_id": task_id}
         )
-        r.raise_for_status()
-        return r.json()
-
-    def step(self, action: Dict[str, Any]) -> Dict[str, Any]:
-        r = self._http.post(
-            f"{self._base}/step",
-            json=action,
-            timeout=self._timeout,
+        resp.raise_for_status()
+        return Observation(**resp.json())
+    
+    def step(self, action: Action) -> StepResult:
+        resp = self._client.post(
+            f"{self.base_url}/step",
+            json=action.model_dump()
         )
-        r.raise_for_status()
-        return r.json()
-
-    def state(self) -> Dict[str, Any]:
-        r = self._http.get(f"{self._base}/state", timeout=self._timeout)
-        r.raise_for_status()
-        return r.json()
-
-    def close(self) -> None:
-        self._http.close()
+        resp.raise_for_status()
+        return StepResult(**resp.json())
+    
+    def state(self) -> dict:
+        resp = self._client.get(f"{self.base_url}/state")
+        resp.raise_for_status()
+        return resp.json()
+    
+    def tasks(self) -> list[TaskInfo]:
+        resp = self._client.get(f"{self.base_url}/tasks")
+        resp.raise_for_status()
+        return [TaskInfo(**t) for t in resp.json()]
+    
+    def health(self) -> dict:
+        resp = self._client.get(f"{self.base_url}/health")
+        resp.raise_for_status()
+        return resp.json()
+    
+    def close(self):
+        self._client.close()
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, *args):
+        self.close()
