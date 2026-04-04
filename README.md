@@ -451,7 +451,7 @@ Aligned with the **OpenEnv RL Challenge** submission rules (see `inference.py`).
 | `HF_TOKEN` | **Yes** | — | API key passed to `OpenAI(api_key=…)` (no default; required at import time) |
 | `API_BASE_URL` | No | `https://api.openai.com/v1` | OpenAI-compatible LLM base URL; set in `.env` / Space secrets for NIM, HF router, etc. |
 | `MODEL_NAME` | No | `gpt-4.1-mini` | Model id for `chat.completions.create` |
-| `ENV_BASE_URL` | No | `http://localhost:7860` | OpenEnv FastAPI base URL (`httpx` client — not used for LLM calls) |
+| `ENV_BASE_URL` | No | See `inference.py` | OpenEnv FastAPI base URL (`httpx`). If unset: tries the bundled default HF Space URL, then `http://localhost:7860`. If set: tries your URL, then localhost if unreachable. |
 | `LOCAL_IMAGE_NAME` / `IMAGE_NAME` | No | — | Spec parity for `from_docker_image`; recorded in `inference_results.json` if set |
 
 Additional tuning variables (`TEMPERATURE`, `TOP_P`, `MAX_TOKENS`, `OPENAI_SEED`, `REPRODUCIBLE_MODE`, …) are documented in `inference.py`.

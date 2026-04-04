@@ -14,7 +14,8 @@ Environment variables (OpenEnv RL Challenge submission):
     HF_TOKEN        — required; Hugging Face API token (no default)
     API_BASE_URL    — LLM API base URL (default: https://api.openai.com/v1)
     MODEL_NAME      — model id (default: gpt-4.1-mini)
-    ENV_BASE_URL    — OpenEnv HTTP server (default: http://localhost:7860)
+    ENV_BASE_URL    — OpenEnv HTTP server (optional). If unset: try default HF Space URL,
+                      then http://localhost:7860. If set in .env: that URL first, then localhost if unreachable.
     LOCAL_IMAGE_NAME or IMAGE_NAME — optional; from_docker_image parity; unused for HTTP env
 
 LLM calls use the OpenAI Python client only (no direct HTTP to the LLM). httpx is used for the
@@ -77,7 +78,21 @@ def log(*args, **kwargs) -> None:
 
 _DEFAULT_API_BASE_URL = "https://api.openai.com/v1"
 _DEFAULT_MODEL_NAME = "gpt-4.1-mini"
-_DEFAULT_ENV_BASE_URL = "http://localhost:7860"
+# When ENV_BASE_URL is not set in the environment, try this Space first, then localhost (see select_reachable_env_client).
+_DEFAULT_REMOTE_ENV_URL = "https://wolfie8935-security-vulnerability-scanner.hf.space"
+_LOCAL_ENV_URL = "http://localhost:7860"
+
+
+def _normalize_env_base_url(url: str) -> str:
+    return url.strip().rstrip("/")
+
+
+def _configured_env_base_url() -> str:
+    explicit = os.getenv("ENV_BASE_URL", "").strip()
+    if explicit:
+        return _normalize_env_base_url(explicit)
+    return _normalize_env_base_url(_DEFAULT_REMOTE_ENV_URL)
+
 
 API_BASE_URL = os.getenv("API_BASE_URL", _DEFAULT_API_BASE_URL)
 MODEL_NAME = os.getenv("MODEL_NAME", _DEFAULT_MODEL_NAME)
@@ -85,7 +100,7 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 if HF_TOKEN is None:
     raise ValueError("HF_TOKEN environment variable is required")
 
-ENV_BASE_URL = os.getenv("ENV_BASE_URL", _DEFAULT_ENV_BASE_URL)
+ENV_BASE_URL = _configured_env_base_url()
 # Declared for spec parity with sample (from_docker_image); HTTP runner ignores this.
 LOCAL_IMAGE_NAME = os.environ.get("LOCAL_IMAGE_NAME") or os.environ.get("IMAGE_NAME")
 TEMPERATURE = float(os.environ.get("TEMPERATURE", "0.0"))
@@ -112,6 +127,50 @@ if OPENAI_SEED is not None:
 
 client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 http_client = httpx.Client(base_url=ENV_BASE_URL, timeout=30.0)
+
+
+def select_reachable_env_client() -> tuple[bool, Optional[Exception]]:
+    """Use ENV_BASE_URL from config; if /health fails, try localhost.
+
+    If ``ENV_BASE_URL`` is unset, config prefers ``_DEFAULT_REMOTE_ENV_URL`` then fallback.
+    Mutates global ``http_client`` and ``ENV_BASE_URL`` to the first reachable base.
+    """
+    global http_client, ENV_BASE_URL
+
+    explicit = os.getenv("ENV_BASE_URL", "").strip()
+    primary = _normalize_env_base_url(explicit) if explicit else _normalize_env_base_url(
+        _DEFAULT_REMOTE_ENV_URL
+    )
+    local = _normalize_env_base_url(_LOCAL_ENV_URL)
+    candidates = [primary]
+    if primary != local:
+        candidates.append(local)
+
+    last_err: Optional[Exception] = None
+    try:
+        http_client.close()
+    except Exception:
+        pass
+
+    for base in candidates:
+        trial = httpx.Client(base_url=base, timeout=15.0)
+        try:
+            trial.get("/health").raise_for_status()
+            http_client = trial
+            ENV_BASE_URL = base
+            if DEBUG_MODE and base != candidates[0]:
+                log(
+                    f"  Environment: using {base} (primary {candidates[0]} unreachable)",
+                )
+            return True, None
+        except Exception as e:
+            last_err = e
+            trial.close()
+
+    http_client = httpx.Client(base_url=primary, timeout=30.0)
+    ENV_BASE_URL = primary
+    return False, last_err
+
 
 # ─── System Prompt ────────────────────────────────────────────
 
@@ -1100,7 +1159,10 @@ def main():
     log("  SECURITY VULNERABILITY SCANNER — INFERENCE")
     log(f"  Model: {MODEL_NAME}")
     log(f"  API: {API_BASE_URL}")
-    log(f"  Environment: {ENV_BASE_URL}")
+    log(
+        f"  Environment: {ENV_BASE_URL} "
+        f"(from ENV_BASE_URL or default Space, with localhost fallback)",
+    )
     log(
         f"  Sampling: temperature={TEMPERATURE}, top_p={TOP_P}, "
         f"max_tokens={MAX_TOKENS}, seed={OPENAI_SEED if OPENAI_SEED is not None else 'none'}",
@@ -1111,16 +1173,27 @@ def main():
     )
     log("=" * 60)
 
+    ok_env, env_err = select_reachable_env_client()
+    if not ok_env:
+        log(f"\n  [ERROR] Cannot reach environment (tried remote default / .env URL then localhost): {env_err}")
+        log("  Make sure the Space is running or start locally: uvicorn main:app --port 7860")
+        if not DEBUG_MODE:
+            print(
+                f"inference: cannot reach environment: {env_err}",
+                file=sys.stderr,
+                flush=True,
+            )
+        return
+
     try:
         health = http_client.get("/health")
         health.raise_for_status()
         log(f"  Environment health: {health.json()}")
     except Exception as e:
-        log(f"\n  [ERROR] Cannot reach environment at {ENV_BASE_URL}: {e}")
-        log("  Make sure the server is running: uvicorn main:app --port 7860")
+        log(f"\n  [ERROR] Health re-check failed at {ENV_BASE_URL}: {e}")
         if not DEBUG_MODE:
             print(
-                f"inference: cannot reach environment at {ENV_BASE_URL}: {e}",
+                f"inference: health check failed at {ENV_BASE_URL}: {e}",
                 file=sys.stderr,
                 flush=True,
             )
