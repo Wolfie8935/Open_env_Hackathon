@@ -5,20 +5,28 @@ Each task: reset → observe → [call LLM → parse JSON → step] → until do
 
 Usage:
     python inference.py
+    python inference.py --debug-mode   # full stderr trace (headers, steps, summary)
 
-Environment variables (hackathon / OpenAI client):
-    HF_TOKEN        — primary API key (or OPENAI_API_KEY)
-    API_BASE_URL    — LLM base URL (default: Hugging Face router, see below)
-    MODEL_NAME      — model id (default: see below)
+By default only hackathon protocol lines are printed to stdout; human-readable logs are off.
+Use --debug-mode to print the full diagnostic trace to stderr.
+
+Environment variables (OpenEnv RL Challenge submission):
+    HF_TOKEN        — required; Hugging Face API token (no default)
+    API_BASE_URL    — LLM API base URL (default: https://api.openai.com/v1)
+    MODEL_NAME      — model id (default: gpt-4.1-mini)
     ENV_BASE_URL    — OpenEnv HTTP server (default: http://localhost:7860)
-    LOCAL_IMAGE_NAME or IMAGE_NAME — only if using from_docker_image(); unused for HTTP env
+    LOCAL_IMAGE_NAME or IMAGE_NAME — optional; from_docker_image parity; unused for HTTP env
+
+LLM calls use the OpenAI Python client only (no direct HTTP to the LLM). httpx is used for the
+environment REST API (ENV_BASE_URL), not for inference.
 
 Submission stdout (stdout only — human logs go to stderr):
     [START] task=<name> env=<benchmark> model=<model>
-    [STEP]  step=<n> action=<str> reward=<0.00> done=<true|false> error=<msg|null>
-    [END]   success=<true|false> steps=<n> score=<0.00> rewards=<r1,r2,...>
+    [STEP] step=<n> action=<str> reward=<0.00> done=<true|false> error=<msg|null>
+    [END] success=<true|false> steps=<n> rewards=<r1,r2,...>
 """
 
+import argparse
 import json
 import os
 import random
@@ -26,6 +34,9 @@ import sys
 import re
 import time
 from typing import Optional
+
+# Set True when running with --debug-mode (verbose stderr).
+DEBUG_MODE: bool = False
 
 # ─── Timeout Configuration ────────────────────────────────────
 
@@ -53,23 +64,28 @@ load_dotenv()
 
 
 def log(*args, **kwargs) -> None:
-    """Human-readable diagnostics (stderr only — stdout reserved for protocol lines)."""
+    """Human-readable diagnostics (stderr only). Suppressed unless --debug-mode."""
+    if not DEBUG_MODE:
+        return
     kwargs.setdefault("file", sys.stderr)
     kwargs.setdefault("flush", True)
     print(*args, **kwargs)
 
 
 # ─── Configuration ────────────────────────────────────────────
-# Defaults align with the official submission sample (override via env on HF Space).
+# Defaults match OpenEnv hackathon submission guidelines (override on HF Space / .env).
 
-_DEFAULT_API_BASE_URL = "https://router.huggingface.co/v1"
-_DEFAULT_MODEL_NAME = "Qwen/Qwen2.5-72B-Instruct"
+_DEFAULT_API_BASE_URL = "https://api.openai.com/v1"
+_DEFAULT_MODEL_NAME = "gpt-4.1-mini"
 _DEFAULT_ENV_BASE_URL = "http://localhost:7860"
 
-API_KEY = os.environ.get("HF_TOKEN") or os.environ.get("OPENAI_API_KEY")
-API_BASE_URL = os.environ.get("API_BASE_URL", _DEFAULT_API_BASE_URL)
-MODEL_NAME = os.environ.get("MODEL_NAME", _DEFAULT_MODEL_NAME)
-ENV_BASE_URL = os.environ.get("ENV_BASE_URL", _DEFAULT_ENV_BASE_URL)
+API_BASE_URL = os.getenv("API_BASE_URL", _DEFAULT_API_BASE_URL)
+MODEL_NAME = os.getenv("MODEL_NAME", _DEFAULT_MODEL_NAME)
+HF_TOKEN = os.getenv("HF_TOKEN")
+if HF_TOKEN is None:
+    raise ValueError("HF_TOKEN environment variable is required")
+
+ENV_BASE_URL = os.getenv("ENV_BASE_URL", _DEFAULT_ENV_BASE_URL)
 # Declared for spec parity with sample (from_docker_image); HTTP runner ignores this.
 LOCAL_IMAGE_NAME = os.environ.get("LOCAL_IMAGE_NAME") or os.environ.get("IMAGE_NAME")
 TEMPERATURE = float(os.environ.get("TEMPERATURE", "0.0"))
@@ -94,7 +110,7 @@ if OPENAI_SEED is not None:
     except ValueError:
         OPENAI_SEED = None
 
-client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY) if API_KEY else None
+client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 http_client = httpx.Client(base_url=ENV_BASE_URL, timeout=30.0)
 
 # ─── System Prompt ────────────────────────────────────────────
@@ -335,14 +351,12 @@ def _emit_protocol_step(
 def _emit_protocol_end(
     success: bool,
     step_count: int,
-    episode_score: float,
     rewards: list[float],
 ) -> None:
-    score = max(0.0, min(1.0, float(episode_score)))
     r_csv = ",".join(_protocol_fmt_reward(x) for x in rewards)
     print(
         f"[END] success={'true' if success else 'false'} steps={step_count} "
-        f"score={_protocol_fmt_reward(score)} rewards={r_csv}",
+        f"rewards={r_csv}",
         flush=True,
     )
 
@@ -517,9 +531,7 @@ def extract_json_action(raw_text: str) -> Optional[dict]:
 
 
 def call_llm_with_retry(messages: list[dict], max_retries: int = 3) -> str:
-    """Call the LLM API with exponential backoff retry."""
-    if client is None:
-        raise RuntimeError("HF_TOKEN or OPENAI_API_KEY is not set; LLM run is unavailable.")
+    """Call the LLM API with exponential backoff retry (OpenAI client only)."""
     effective_retries = REPRO_MAX_RETRIES if REPRODUCIBLE_MODE else max_retries
     for attempt in range(effective_retries):
         try:
@@ -643,7 +655,7 @@ def run_task(task_id: int) -> dict:
     """Run the agent through a single task episode.
 
     Emits hackathon stdout protocol: [START], one [STEP] per HTTP env step, then [END] (always if [START] ran).
-    Human-readable traces go to stderr via log().
+    Human-readable traces go to stderr via log() when --debug-mode is set.
     """
     protocol_rewards: list[float] = []
     protocol_step_n = 0
@@ -913,10 +925,9 @@ def run_task(task_id: int) -> dict:
         raise
     finally:
         if protocol_started:
-            ep_score = float(last_result.get("info", {}).get("episode_score", 0.0))
             done_ok = bool(last_result.get("done", False))
             success = protocol_exc is None and done_ok
-            _emit_protocol_end(success, protocol_step_n, ep_score, protocol_rewards)
+            _emit_protocol_end(success, protocol_step_n, protocol_rewards)
 
 
 def run_deterministic_baseline() -> list[dict]:
@@ -1068,7 +1079,20 @@ def print_comparison(llm_results: list[dict], baseline_results: list[dict]) -> N
 
 def main():
     """Run the agent through all 3 tasks and print summary."""
-    global GLOBAL_START_TIME
+    global GLOBAL_START_TIME, DEBUG_MODE
+
+    parser = argparse.ArgumentParser(
+        description="Security scanner inference (OpenEnv). "
+        "Default: protocol lines on stdout only; use --debug-mode for full stderr logs.",
+    )
+    parser.add_argument(
+        "--debug-mode",
+        action="store_true",
+        help="Print full diagnostic trace to stderr (headers, per-step logs, summary).",
+    )
+    args = parser.parse_args()
+    DEBUG_MODE = args.debug_mode
+
     GLOBAL_START_TIME = time.time()
     start_time = GLOBAL_START_TIME
 
@@ -1094,6 +1118,12 @@ def main():
     except Exception as e:
         log(f"\n  [ERROR] Cannot reach environment at {ENV_BASE_URL}: {e}")
         log("  Make sure the server is running: uvicorn main:app --port 7860")
+        if not DEBUG_MODE:
+            print(
+                f"inference: cannot reach environment at {ENV_BASE_URL}: {e}",
+                file=sys.stderr,
+                flush=True,
+            )
         return
 
     log("\n  Running deterministic baseline...")
@@ -1102,8 +1132,6 @@ def main():
     results = []
     if REPRO_BASELINE_ONLY:
         log("  REPRO_BASELINE_ONLY is enabled — skipping LLM run.")
-    elif client is None:
-        log("  HF_TOKEN / OPENAI_API_KEY not set — skipping LLM run.")
     else:
         # Each task runs exactly once, isolated with try/except
         for task_id in [1, 2, 3]:
@@ -1154,7 +1182,7 @@ def main():
     if results:
         print_comparison(results, baseline_results)
     else:
-        log("  LLM comparison unavailable (no API key).")
+        log("  LLM run skipped (REPRO_BASELINE_ONLY) — no LLM vs baseline comparison.")
 
     log("=" * 60)
 
@@ -1163,8 +1191,7 @@ def main():
         "api_base_url": API_BASE_URL,
         "model_name": MODEL_NAME,
         "env_base_url": ENV_BASE_URL,
-        "hf_token_set": bool(os.environ.get("HF_TOKEN")),
-        "openai_api_key_set": bool(os.environ.get("OPENAI_API_KEY")),
+        "hf_token_set": True,
     }
     if LOCAL_IMAGE_NAME:
         submission_cfg["local_image_name"] = LOCAL_IMAGE_NAME

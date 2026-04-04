@@ -28,7 +28,8 @@ REQUIRED_FILES = [
     "main.py",
 ]
 
-REQUIRED_ENV_VARS = ["HF_TOKEN", "API_BASE_URL", "MODEL_NAME"]
+# API_BASE_URL and MODEL_NAME have defaults in inference.py; HF_TOKEN is mandatory.
+REQUIRED_ENV_VARS = ["HF_TOKEN"]
 
 
 def run_cmd(cmd: list[str], cwd: Path, timeout_s: int = 1200) -> Tuple[int, str]:

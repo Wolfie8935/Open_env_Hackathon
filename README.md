@@ -219,11 +219,38 @@ Phase 1 gates from the organizer brief, and how this repository addresses them:
 | **Dockerfile builds** | `docker build -t security-scanner .` from repo root. |
 | **Baseline / inference completes** | Root `inference.py` runs deterministic baseline then LLM on tasks 1–3; writes `inference_results.json`. |
 | **3+ tasks, graders, scores in [0,1]** | Tasks 1–3 with graders; episode scores clamped to **[0, 1]**. |
-| **Mandatory env vars** | Set **`HF_TOKEN`**, **`API_BASE_URL`**, **`MODEL_NAME`** on the runner (HF Space secrets or `.env`). **`ENV_BASE_URL`** must point at the live environment (e.g. Space URL or `http://localhost:7860`). |
-| **OpenAI client for all LLM calls** | `from openai import OpenAI` — all completions go through `client.chat.completions.create`. |
-| **Structured stdout** | For each LLM task: **`[START]`** → one **`[STEP]`** per `POST /step` → **`[END]`** (see `inference.py`). Human-readable traces use **stderr**; capture **stdout only** to audit protocol lines (e.g. Windows: `python inference.py 2>NUL`). |
+| **Mandatory env vars** | **`HF_TOKEN`** is required (no default; script raises if unset). **`API_BASE_URL`** and **`MODEL_NAME`** have defaults in `inference.py` (`https://api.openai.com/v1`, `gpt-4.1-mini`); override via HF Space secrets or `.env` for your provider (e.g. NVIDIA NIM, Hugging Face router). **`ENV_BASE_URL`** must point at the live environment (e.g. Space URL or `http://localhost:7860`). |
+| **OpenAI client for all LLM calls** | `from openai import OpenAI` — all completions go through `client.chat.completions.create`. The environment is contacted with **`httpx`** only; that is not used for LLM inference. |
+| **Structured stdout** | See **OpenEnv RL Challenge — inference stdout contract** below. Default run: **protocol lines on stdout only**; use **`python inference.py --debug-mode`** for full human-readable logs on **stderr**. |
 | **Runtime &lt; 20 min; 2 vCPU / 8 GB** | Full run measured **~6–7 min** locally; keep `MAX_TOKENS` and timeouts conservative on small instances. |
 | **Validator script** | `scripts/validate-submission.sh <space_url> [repo_dir]` (bash: Git Bash / WSL). |
+
+### OpenEnv RL Challenge — inference stdout contract
+
+Per the hackathon brief, **`inference.py` lives in the repo root** and must emit **exactly these line types** to **stdout**, in order, for each LLM episode:
+
+1. **`[START]`** — once at episode begin: `task`, `env`, `model`
+2. **`[STEP]`** — once per environment step, immediately after each successful `POST /step`: `step`, `action`, `reward` (2 decimals), `done` (`true`/`false`), `error` (raw `last_action_error` or `null`)
+3. **`[END]`** — once after the episode finishes (including on exception after `[START]`): `success`, `steps`, `rewards` (comma-separated, 2 decimals each)
+
+**Rules:** one line per record; no embedded newlines; `done` / `success` are lowercase booleans. Human-oriented diagnostics are **not** printed to stdout in the default mode (they appear on stderr only when you pass **`--debug-mode`**).
+
+**Shape (illustrative — your `task` / `model` / rewards will vary):**
+
+```
+[START] task=Single-File-Audit env=security-vulnerability-scanner model=meta/llama-3.1-70b-instruct
+[STEP] step=1 action=request_file(filename=config.py) reward=0.00 done=false error=null
+[STEP] step=2 action=report_vulnerability(file=vulnerable_code.py,line=116,type=Command_Injection) reward=0.50 done=false error=null
+[END] success=true steps=5 rewards=0.00,0.50,0.50,0.50,0.00
+```
+
+A full run executes **tasks 1 → 2 → 3**, so you will see **three** `[START]`…`[END]` blocks back-to-back on stdout (the deterministic baseline uses the same HTTP `/step` API but does not emit this protocol — only the LLM task loop does).
+
+**Commands:**
+
+- `python inference.py` — stdout: protocol only; stderr: quiet (unless the environment is unreachable, in which case a single error line is printed to stderr).
+- `python inference.py --debug-mode` — stdout: same protocol; stderr: banners, per-step traces, summary, comparison.
+- Capture protocol only: `python inference.py 2>NUL` (Windows) or `python inference.py 2>/dev/null` (Unix).
 
 ### Sample inference script vs this project
 
@@ -248,12 +275,13 @@ MAX_TOKENS=1500
 
 3. **Validate**: `uv run openenv validate` (from repo root).
 4. **Terminal A — environment**: `uvicorn main:app --host 0.0.0.0 --port 7860`
-5. **Terminal B — inference**: `python inference.py`  
-   - Optional: `python inference.py 2>NUL` (Windows) or `2>/dev/null` (Unix) to list **only** `[START]` / `[STEP]` / `[END]` on stdout.
+5. **Terminal B — inference**: `python inference.py` (protocol on stdout; stderr quiet by default).  
+   - Verbose logs: `python inference.py --debug-mode`.  
+   - Optional: redirect stderr away to capture **only** protocol lines: `python inference.py 2>NUL` (Windows) or `2>/dev/null` (Unix).
 6. **Artifacts**: `inference_results.json` (includes `submission_config` + `reproducibility` blocks for auditing).
 7. **Docker**: `docker build -t security-scanner .` then `docker run -p 7860:7860 security-scanner` for a container-only server smoke test.
 
-Scores are **stochastic** to a degree (provider + model); same env vars and seed maximize repeatability. For HF judging, define **`API_BASE_URL`**, **`MODEL_NAME`**, and **`HF_TOKEN`** in the Space or CI **secrets**, and set **`ENV_BASE_URL`** to the **public Space URL** when inference runs outside the container.
+Scores are **stochastic** to a degree (provider + model); same env vars and seed maximize repeatability. For HF judging, set **`HF_TOKEN`** (required) in Space or CI **secrets**; set **`API_BASE_URL`** and **`MODEL_NAME`** when you are not using the built-in OpenAI defaults; set **`ENV_BASE_URL`** to the **public Space URL** when inference runs outside the container.
 
 ## Active Feature Flags (Current Project Setup)
 
@@ -397,30 +425,36 @@ Deploy via the standard HF Spaces Docker workflow:
 ### Running Inference
 
 ```bash
-# Set your API key
+# Required — inference.py raises if unset
 export HF_TOKEN=your-api-key-here
 
-# Optionally configure model and API
+# Optional — defaults in inference.py are OpenAI-compatible (see Environment Variables)
 export API_BASE_URL=https://integrate.api.nvidia.com/v1
 export MODEL_NAME=meta/llama-3.1-70b-instruct
 
 # Start the environment server (in one terminal)
 uvicorn main:app --host 0.0.0.0 --port 7860
 
-# Run the agent (in another terminal)
+# Run the agent (in another terminal) — hackathon protocol on stdout
 python inference.py
+
+# Full stderr trace (headers, step logs, summary)
+python inference.py --debug-mode
 ```
 
 ## Environment Variables
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `HF_TOKEN` | Yes (or `OPENAI_API_KEY`) | — | API key for the OpenAI-compatible LLM |
-| `OPENAI_API_KEY` | Alternative to `HF_TOKEN` | — | Same role as `HF_TOKEN` if your runner sets this name |
-| `API_BASE_URL` | Yes for judged runs | Hugging Face router URL in `inference.py` if unset | Override in `.env` / Space secrets for your provider |
-| `MODEL_NAME` | Yes for judged runs | Qwen default in `inference.py` if unset | Override to match your endpoint (e.g. Llama on NIM) |
-| `ENV_BASE_URL` | Yes when env is remote | `http://localhost:7860` | OpenEnv FastAPI base URL (Space URL when inference runs off-container) |
-| `LOCAL_IMAGE_NAME` / `IMAGE_NAME` | No | — | Only for `from_docker_image` workflows; recorded in `inference_results.json` if set |
+Aligned with the **OpenEnv RL Challenge** submission rules (see `inference.py`).
+
+| Variable | Required | Default (in code) | Description |
+|----------|----------|-------------------|-------------|
+| `HF_TOKEN` | **Yes** | — | API key passed to `OpenAI(api_key=…)` (no default; required at import time) |
+| `API_BASE_URL` | No | `https://api.openai.com/v1` | OpenAI-compatible LLM base URL; set in `.env` / Space secrets for NIM, HF router, etc. |
+| `MODEL_NAME` | No | `gpt-4.1-mini` | Model id for `chat.completions.create` |
+| `ENV_BASE_URL` | No | `http://localhost:7860` | OpenEnv FastAPI base URL (`httpx` client — not used for LLM calls) |
+| `LOCAL_IMAGE_NAME` / `IMAGE_NAME` | No | — | Spec parity for `from_docker_image`; recorded in `inference_results.json` if set |
+
+Additional tuning variables (`TEMPERATURE`, `TOP_P`, `MAX_TOKENS`, `OPENAI_SEED`, `REPRODUCIBLE_MODE`, …) are documented in `inference.py`.
 
 ## API Reference
 
