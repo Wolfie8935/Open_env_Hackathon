@@ -76,8 +76,8 @@ def log(*args, **kwargs) -> None:
 # ─── Configuration ────────────────────────────────────────────
 # Defaults match OpenEnv hackathon submission guidelines (override on HF Space / .env).
 
-_DEFAULT_API_BASE_URL = "https://api.openai.com/v1"
-_DEFAULT_MODEL_NAME = "gpt-4.1-mini"
+_DEFAULT_API_BASE_URL = "https://router.huggingface.co/v1"
+_DEFAULT_MODEL_NAME = "Qwen/Qwen2.5-72B-Instruct"
 # When ENV_BASE_URL is not set in the environment, try this Space first, then localhost (see select_reachable_env_client).
 _DEFAULT_REMOTE_ENV_URL = "https://wolfie8935-security-vulnerability-scanner.hf.space"
 _LOCAL_ENV_URL = "http://localhost:7860"
