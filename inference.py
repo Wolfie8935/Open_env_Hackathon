@@ -6,16 +6,23 @@ Each task: reset → observe → [call LLM → parse JSON → step] → until do
 Usage:
     python inference.py
 
-Environment variables:
-    HF_TOKEN        — required, your API key
-    API_BASE_URL    — optional, defaults to https://integrate.api.nvidia.com/v1
-    MODEL_NAME      — optional, defaults to meta/llama-3.1-70b-instruct
-    ENV_BASE_URL    — optional, defaults to http://localhost:7860
+Environment variables (hackathon / OpenAI client):
+    HF_TOKEN        — primary API key (or OPENAI_API_KEY)
+    API_BASE_URL    — LLM base URL (default: Hugging Face router, see below)
+    MODEL_NAME      — model id (default: see below)
+    ENV_BASE_URL    — OpenEnv HTTP server (default: http://localhost:7860)
+    LOCAL_IMAGE_NAME or IMAGE_NAME — only if using from_docker_image(); unused for HTTP env
+
+Submission stdout (stdout only — human logs go to stderr):
+    [START] task=<name> env=<benchmark> model=<model>
+    [STEP]  step=<n> action=<str> reward=<0.00> done=<true|false> error=<msg|null>
+    [END]   success=<true|false> steps=<n> score=<0.00> rewards=<r1,r2,...>
 """
 
 import json
 import os
 import random
+import sys
 import re
 import time
 from typing import Optional
@@ -44,16 +51,27 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def log(*args, **kwargs) -> None:
+    """Human-readable diagnostics (stderr only — stdout reserved for protocol lines)."""
+    kwargs.setdefault("file", sys.stderr)
+    kwargs.setdefault("flush", True)
+    print(*args, **kwargs)
+
+
 # ─── Configuration ────────────────────────────────────────────
+# Defaults align with the official submission sample (override via env on HF Space).
 
-API_KEY = os.environ.get("HF_TOKEN")
-API_BASE_URL = os.environ.get("API_BASE_URL")
-MODEL_NAME = os.environ.get("MODEL_NAME")
-ENV_BASE_URL = os.environ.get("ENV_BASE_URL")
+_DEFAULT_API_BASE_URL = "https://router.huggingface.co/v1"
+_DEFAULT_MODEL_NAME = "Qwen/Qwen2.5-72B-Instruct"
+_DEFAULT_ENV_BASE_URL = "http://localhost:7860"
 
-API_BASE_URL = os.environ.get("API_BASE_URL", API_BASE_URL)
-MODEL_NAME = os.environ.get("MODEL_NAME", MODEL_NAME)
-ENV_BASE_URL = os.environ.get("ENV_BASE_URL", ENV_BASE_URL)
+API_KEY = os.environ.get("HF_TOKEN") or os.environ.get("OPENAI_API_KEY")
+API_BASE_URL = os.environ.get("API_BASE_URL", _DEFAULT_API_BASE_URL)
+MODEL_NAME = os.environ.get("MODEL_NAME", _DEFAULT_MODEL_NAME)
+ENV_BASE_URL = os.environ.get("ENV_BASE_URL", _DEFAULT_ENV_BASE_URL)
+# Declared for spec parity with sample (from_docker_image); HTTP runner ignores this.
+LOCAL_IMAGE_NAME = os.environ.get("LOCAL_IMAGE_NAME") or os.environ.get("IMAGE_NAME")
 TEMPERATURE = float(os.environ.get("TEMPERATURE", "0.0"))
 TOP_P = float(os.environ.get("TOP_P", "1.0"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "1500"))
@@ -247,6 +265,87 @@ Never use a vulnerability type not in the list above. Never call mark_complete b
 
 EXPECTED_VULN_COUNTS = {1: 3, 2: 5, 3: 7}
 
+# OpenEnv / submission protocol (must match hackathon stdout contract)
+TASK_PROTOCOL_NAMES: dict[int, str] = {
+    1: "Single-File-Audit",
+    2: "Multi-File-Flask-App",
+    3: "Real-World-Project-Audit",
+}
+BENCHMARK_ENV = os.environ.get("OPENENV_BENCHMARK", "security-vulnerability-scanner")
+
+
+def _protocol_fmt_reward(x: float) -> str:
+    return f"{float(x):.2f}"
+
+
+def _protocol_error_field(err) -> str:
+    """Format error= for [STEP] lines: literal null, or raw string on one line (spec: raw last_action_error)."""
+    if err is None or err == "":
+        return "null"
+    s = str(err).replace("\r\n", "\n").replace("\r", "\n")
+    s = s.replace("\n", " ").strip()
+    if s == "":
+        return "null"
+    # Keep content raw (including '='); cap length so one log line stays bounded.
+    return s[:2000]
+
+
+def _protocol_action_str(action: dict) -> str:
+    """Single-line action token (no spaces outside structured delimiters)."""
+    t = action.get("action_type", "unknown")
+    p = action.get("payload") or {}
+    if t == "report_vulnerability":
+        typ = str(p.get("vulnerability_type", "")).replace(" ", "_")
+        fn = str(p.get("file", "")).replace(" ", "_")
+        return f"report_vulnerability(file={fn},line={p.get('line_number',0)},type={typ})"
+    if t == "request_file":
+        fn = str(p.get("filename", "")).replace(" ", "_")
+        return f"request_file(filename={fn})"
+    if t == "add_note":
+        note = str(p.get("note", ""))[:80].replace("\n", " ").replace("\r", " ")
+        note = " ".join(note.split()).replace("=", "·")
+        return f"add_note({note})"
+    if t == "mark_complete":
+        return "mark_complete()"
+    return json.dumps(action, ensure_ascii=False, separators=(",", ":")).replace(" ", "")
+
+
+def _emit_protocol_start(task_slug: str, model_name: str) -> None:
+    print(
+        f"[START] task={task_slug} env={BENCHMARK_ENV} model={model_name}",
+        flush=True,
+    )
+
+
+def _emit_protocol_step(
+    step_n: int,
+    action_s: str,
+    reward: float,
+    done: bool,
+    last_action_error,
+) -> None:
+    err = _protocol_error_field(last_action_error)
+    print(
+        f"[STEP] step={step_n} action={action_s} reward={_protocol_fmt_reward(reward)} "
+        f"done={'true' if done else 'false'} error={err}",
+        flush=True,
+    )
+
+
+def _emit_protocol_end(
+    success: bool,
+    step_count: int,
+    episode_score: float,
+    rewards: list[float],
+) -> None:
+    score = max(0.0, min(1.0, float(episode_score)))
+    r_csv = ",".join(_protocol_fmt_reward(x) for x in rewards)
+    print(
+        f"[END] success={'true' if success else 'false'} steps={step_count} "
+        f"score={_protocol_fmt_reward(score)} rewards={r_csv}",
+        flush=True,
+    )
+
 
 # ─── Helper Functions ─────────────────────────────────────────
 
@@ -420,7 +519,7 @@ def extract_json_action(raw_text: str) -> Optional[dict]:
 def call_llm_with_retry(messages: list[dict], max_retries: int = 3) -> str:
     """Call the LLM API with exponential backoff retry."""
     if client is None:
-        raise RuntimeError("HF_TOKEN is not set; LLM run is unavailable.")
+        raise RuntimeError("HF_TOKEN or OPENAI_API_KEY is not set; LLM run is unavailable.")
     effective_retries = REPRO_MAX_RETRIES if REPRODUCIBLE_MODE else max_retries
     for attempt in range(effective_retries):
         try:
@@ -443,7 +542,7 @@ def call_llm_with_retry(messages: list[dict], max_retries: int = 3) -> str:
             if attempt == effective_retries - 1:
                 raise RuntimeError(f"LLM API failed after {effective_retries} attempts: {e}")
             wait_time = 5 * (2 ** attempt)
-            print(f"  [WARN] LLM API error (attempt {attempt + 1}): {e}. Retrying in {wait_time}s...", flush=True)
+            log(f"  [WARN] LLM API error (attempt {attempt + 1}): {e}. Retrying in {wait_time}s...")
             time.sleep(wait_time)
     return ""
 
@@ -541,248 +640,283 @@ def _is_trap_risk_report(action: dict, obs: dict) -> tuple[bool, str]:
 # ─── Main Agent Loop ──────────────────────────────────────────
 
 def run_task(task_id: int) -> dict:
-    """Run the agent through a single task episode."""
-    obs = env_reset(task_id)
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    """Run the agent through a single task episode.
 
-    step_logs = []
+    Emits hackathon stdout protocol: [START], one [STEP] per HTTP env step, then [END] (always if [START] ran).
+    Human-readable traces go to stderr via log().
+    """
+    protocol_rewards: list[float] = []
+    protocol_step_n = 0
+    last_result: dict = {}
+    protocol_started = False
+    protocol_exc: Exception | None = None
+
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    step_logs: list[dict] = []
     done = False
-    max_fallback_steps = obs.get("remaining_steps", 40) + 2
     false_positives = 0
     true_positives = 0
     gt_count = 0
-    task_start = time.time()  # per-task timer for timeout guard
-
-    # Static analysis hints fetched once — shown on step 1 only.
-    # Active insights from obs update every step via format_observation (Fix 5).
-    security_state = get_security_state()
-    if security_state is None:
-        print(f"  [WARN] Task {task_id}: static analysis hints unavailable - agent will rely on code only.", flush=True)
-
-    print(f"\n{'='*60}", flush=True)
-    print(f"TASK {task_id}: {obs.get('feedback', 'Started')[:80]}", flush=True)
-    print(f"{'='*60}", flush=True)
-
+    task_start = time.time()
     step_count = 0
     all_findings_with_rewards: list[dict] = []
     reported_keys: set[tuple[str, str]] = set()
-    result = {}
+    result: dict = {}
+    obs: dict = {}
+    max_fallback_steps = 42
 
-    while not done and step_count < max_fallback_steps:
-        step_count += 1
-
-        # Fix 5: Static hints on step 1 only; insights come from obs every step
-        include_static = (step_count == 1) and (security_state is not None)
-        user_msg = format_observation(
-            obs,
-            security_state=security_state if include_static else None,
+    def do_step(act: dict) -> dict:
+        nonlocal last_result, protocol_step_n
+        r = env_step(act)
+        last_result = r
+        protocol_step_n += 1
+        rw = float(r.get("reward", 0.0))
+        protocol_rewards.append(rw)
+        err_raw = r.get("info", {}).get("last_action_error")
+        _emit_protocol_step(
+            protocol_step_n,
+            _protocol_action_str(act),
+            rw,
+            bool(r.get("done", False)),
+            err_raw,
         )
-        messages.append({"role": "user", "content": user_msg})
+        return r
 
-        raw_response = call_llm_with_retry(messages)
-        messages.append({"role": "assistant", "content": raw_response})
+    try:
+        obs = env_reset(task_id)
+        max_fallback_steps = obs.get("remaining_steps", 40) + 2
+        protocol_started = True
+        _emit_protocol_start(
+            TASK_PROTOCOL_NAMES.get(task_id, f"task-{task_id}"),
+            MODEL_NAME or "unknown",
+        )
 
-        action = extract_json_action(raw_response)
-        if action is None:
-            messages.append({
-                "role": "user",
-                "content": "Your response was not valid JSON. Please respond with ONLY a valid JSON object matching one of the action formats."
-            })
+        security_state = get_security_state()
+        if security_state is None:
+            log(
+                f"  [WARN] Task {task_id}: static analysis hints unavailable - agent will rely on code only."
+            )
+
+        log(f"\n{'='*60}")
+        log(f"TASK {task_id}: {obs.get('feedback', 'Started')[:80]}")
+        log(f"{'='*60}")
+
+        while not done and step_count < max_fallback_steps:
+            step_count += 1
+
+            include_static = (step_count == 1) and (security_state is not None)
+            user_msg = format_observation(
+                obs,
+                security_state=security_state if include_static else None,
+            )
+            messages.append({"role": "user", "content": user_msg})
+
             raw_response = call_llm_with_retry(messages)
             messages.append({"role": "assistant", "content": raw_response})
+
             action = extract_json_action(raw_response)
-
             if action is None:
-                print(f"  Step {step_count} | [WARN] Could not parse action, using mark_complete", flush=True)
-                action = {"action_type": "mark_complete", "payload": {}}
-
-        # ── DUPLICATE INTERCEPTOR (Fix 2) ──────────────────────
-        if action.get("action_type") == "report_vulnerability":
-            vuln_file = action.get("payload", {}).get("file", "")
-            vuln_type = action.get("payload", {}).get("vulnerability_type", "")
-            key = (vuln_file, vuln_type)
-            if key in reported_keys:
-                dedup_msg = (
-                    f"DUPLICATE BLOCKED: You already reported '{vuln_type}' in '{vuln_file}'. "
-                    f"Do not repeat findings. Check the Already Reported Findings list and move on."
-                )
-                print(
-                    f"  Step {step_count:2d} | duplicate BLOCKED                 | {vuln_type} in {vuln_file}",
-                    flush=True,
-                )
-                messages.append({"role": "user", "content": dedup_msg})
-                step_count -= 1
-                continue
-
-            trap_risk, trap_msg = _is_trap_risk_report(action, obs)
-            if trap_risk:
-                print(
-                    f"  Step {step_count:2d} | trap-risk INTERCEPTED            | {vuln_type} in {vuln_file}",
-                    flush=True,
-                )
                 messages.append({
                     "role": "user",
-                    "content": (
-                        f"TRAP-RISK BLOCKED: {trap_msg} "
-                        "Re-check data source controllability and sink reachability. "
-                        "If uncertain, use add_note() instead of report_vulnerability."
-                    ),
+                    "content": "Your response was not valid JSON. Please respond with ONLY a valid JSON object matching one of the action formats."
                 })
-                step_count -= 1
-                continue
+                raw_response = call_llm_with_retry(messages)
+                messages.append({"role": "assistant", "content": raw_response})
+                action = extract_json_action(raw_response)
 
-        # ── MARK_COMPLETE INTERCEPTOR ──────────────────────────
-        if action.get("action_type") == "mark_complete":
-            allowed, intercept_msg = should_allow_mark_complete(
-                all_findings_with_rewards, task_id, step_count
-            )
-            if not allowed:
-                print(
-                    f"  Step {step_count:2d} | mark_complete INTERCEPTED         | "
-                    f"Only {len([f for f in all_findings_with_rewards if f.get('reward', 0) > 0])}"
-                    f"/{EXPECTED_VULN_COUNTS[task_id]} found — forcing continuation",
-                    flush=True,
+                if action is None:
+                    log(f"  Step {step_count} | [WARN] Could not parse action, using mark_complete")
+                    action = {"action_type": "mark_complete", "payload": {}}
+
+            if action.get("action_type") == "report_vulnerability":
+                vuln_file = action.get("payload", {}).get("file", "")
+                vuln_type = action.get("payload", {}).get("vulnerability_type", "")
+                key = (vuln_file, vuln_type)
+                if key in reported_keys:
+                    dedup_msg = (
+                        f"DUPLICATE BLOCKED: You already reported '{vuln_type}' in '{vuln_file}'. "
+                        f"Do not repeat findings. Check the Already Reported Findings list and move on."
+                    )
+                    log(
+                        f"  Step {step_count:2d} | duplicate BLOCKED                 | {vuln_type} in {vuln_file}"
+                    )
+                    messages.append({"role": "user", "content": dedup_msg})
+                    step_count -= 1
+                    continue
+
+                trap_risk, trap_msg = _is_trap_risk_report(action, obs)
+                if trap_risk:
+                    log(
+                        f"  Step {step_count:2d} | trap-risk INTERCEPTED            | {vuln_type} in {vuln_file}"
+                    )
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"TRAP-RISK BLOCKED: {trap_msg} "
+                            "Re-check data source controllability and sink reachability. "
+                            "If uncertain, use add_note() instead of report_vulnerability."
+                        ),
+                    })
+                    step_count -= 1
+                    continue
+
+            if action.get("action_type") == "mark_complete":
+                allowed, intercept_msg = should_allow_mark_complete(
+                    all_findings_with_rewards, task_id, step_count
                 )
-                messages.append({"role": "user", "content": intercept_msg})
-                continue
+                if not allowed:
+                    log(
+                        f"  Step {step_count:2d} | mark_complete INTERCEPTED         | "
+                        f"Only {len([f for f in all_findings_with_rewards if f.get('reward', 0) > 0])}"
+                        f"/{EXPECTED_VULN_COUNTS[task_id]} found — forcing continuation"
+                    )
+                    messages.append({"role": "user", "content": intercept_msg})
+                    continue
 
-        # Send to environment
-        result = env_step(action)
+            result = do_step(action)
 
-        # ── TIMEOUT GUARD — force completion if approaching limit ──────
-        if is_time_critical(task_start, task_id):
-            print(
-                f"    [TIMEOUT] Time limit approaching - forcing task {task_id} completion",
-                flush=True,
-            )
-            try:
-                final_result = env_step({"action_type": "mark_complete", "payload": {}})
-                step_logs.append({
-                    "step": step_count,
-                    "action_type": "mark_complete",
-                    "action": {"action_type": "mark_complete", "payload": {}},
-                    "reward": 0.0,
-                    "feedback": "forced by timeout",
-                    "forced": True,
-                })
-                return {
-                    "task_id": task_id,
-                    "final_score": final_result.get("info", {}).get("episode_score", 0.0),
-                    "steps": step_logs,
-                    "total_steps": step_count,
-                    "true_positives": true_positives,
-                    "false_positives": false_positives,
-                    "ground_truth_count": gt_count,
-                    "missed_vulnerabilities": [],
-                    "security_analysis": {},
-                    "timed_out": True,
+            reward = result.get("reward", 0)
+            feedback = result.get("observation", {}).get("feedback", "")
+            action_type = action.get("action_type", "unknown")
+
+            if action_type == "report_vulnerability":
+                vuln_file = action.get("payload", {}).get("file", "")
+                vuln_type = action.get("payload", {}).get("vulnerability_type", "")
+                finding_record = {
+                    "reward": reward,
+                    "vulnerability_type": vuln_type,
+                    "file": vuln_file,
                 }
-            except Exception as e:
-                step_logs.append({
-                    "step": step_count,
-                    "action_type": "mark_complete",
-                    "action": {"action_type": "mark_complete", "payload": {}},
-                    "reward": 0.0,
-                    "feedback": f"forced completion failed: {e}",
-                    "forced": True,
-                })
-                return {
-                    "task_id": task_id,
-                    "final_score": result.get("info", {}).get("episode_score", 0.0),
-                    "steps": step_logs,
-                    "total_steps": step_count,
-                    "true_positives": true_positives,
-                    "false_positives": false_positives,
-                    "ground_truth_count": gt_count,
-                    "missed_vulnerabilities": [],
-                    "security_analysis": {},
-                    "timed_out": True,
-                    "timeout_fallback": "mark_complete_failed",
-                }
+                all_findings_with_rewards.append(finding_record)
+                if reward > 0:
+                    true_positives += 1
+                    reported_keys.add((vuln_file, vuln_type))
+                elif reward < 0:
+                    false_positives += 1
 
-        reward = result.get("reward", 0)
-        feedback = result.get("observation", {}).get("feedback", "")
-        action_type = action.get("action_type", "unknown")
-
-        if action_type == "report_vulnerability":
-            vuln_file = action.get("payload", {}).get("file", "")
-            vuln_type = action.get("payload", {}).get("vulnerability_type", "")
-            finding_record = {
+            step_logs.append({
+                "step": step_count,
+                "action_type": action_type,
+                "action": action,
                 "reward": reward,
-                "vulnerability_type": vuln_type,
-                "file": vuln_file,
-            }
-            all_findings_with_rewards.append(finding_record)
-            if reward > 0:
-                true_positives += 1
-                reported_keys.add((vuln_file, vuln_type))
-            elif reward < 0:
-                false_positives += 1
+                "feedback": feedback,
+            })
 
-        step_logs.append({
-            "step": step_count,
-            "action_type": action_type,
-            "action": action,
-            "reward": reward,
-            "feedback": feedback,
-        })
+            reward_str = f"{reward:+.2f}" if reward != 0 else " 0.00"
+            log(
+                f"  Step {step_count:2d} | {action_type:<25s} | reward: {reward_str} | {feedback[:60]}"
+            )
 
-        reward_str = f"{reward:+.2f}" if reward != 0 else " 0.00"
-        print(f"  Step {step_count:2d} | {action_type:<25s} | reward: {reward_str} | {feedback[:60]}", flush=True)
+            if is_time_critical(task_start, task_id):
+                log(f"    [TIMEOUT] Time limit approaching - forcing task {task_id} completion")
+                try:
+                    mc = {"action_type": "mark_complete", "payload": {}}
+                    final_result = do_step(mc)
+                    step_logs.append({
+                        "step": step_count,
+                        "action_type": "mark_complete",
+                        "action": mc,
+                        "reward": float(final_result.get("reward", 0.0)),
+                        "feedback": final_result.get("observation", {}).get("feedback", "forced by timeout"),
+                        "forced": True,
+                    })
+                    return {
+                        "task_id": task_id,
+                        "final_score": final_result.get("info", {}).get("episode_score", 0.0),
+                        "steps": step_logs,
+                        "total_steps": step_count,
+                        "true_positives": true_positives,
+                        "false_positives": false_positives,
+                        "ground_truth_count": gt_count,
+                        "missed_vulnerabilities": [],
+                        "security_analysis": {},
+                        "timed_out": True,
+                    }
+                except Exception as e:
+                    step_logs.append({
+                        "step": step_count,
+                        "action_type": "mark_complete",
+                        "action": {"action_type": "mark_complete", "payload": {}},
+                        "reward": 0.0,
+                        "feedback": f"forced completion failed: {e}",
+                        "forced": True,
+                    })
+                    return {
+                        "task_id": task_id,
+                        "final_score": result.get("info", {}).get("episode_score", 0.0),
+                        "steps": step_logs,
+                        "total_steps": step_count,
+                        "true_positives": true_positives,
+                        "false_positives": false_positives,
+                        "ground_truth_count": gt_count,
+                        "missed_vulnerabilities": [],
+                        "security_analysis": {},
+                        "timed_out": True,
+                        "timeout_fallback": "mark_complete_failed",
+                    }
 
-        obs = result.get("observation", obs)
-        done = result.get("done", False)
-        gt_count = result.get("info", {}).get("ground_truth_count", gt_count)
+            obs = result.get("observation", obs)
+            done = result.get("done", False)
+            gt_count = result.get("info", {}).get("ground_truth_count", gt_count)
 
-        if len(messages) > 30:
-            messages = messages[:1] + messages[-20:]
+            if len(messages) > 30:
+                messages = messages[:1] + messages[-20:]
 
-    final_score = result.get("info", {}).get("episode_score", 0.0)
+        final_score = result.get("info", {}).get("episode_score", 0.0)
 
-    print(f"\n  -- Task {task_id} Summary --", flush=True)
-    print(f"  Vulnerabilities found: {true_positives} / {gt_count}", flush=True)
-    print(f"  False positives: {false_positives}", flush=True)
-    print(f"  Steps used: {step_count} / {max_fallback_steps - 2}", flush=True)
-    print(f"  Score: {final_score:.3f}", flush=True)
+        log(f"\n  -- Task {task_id} Summary --")
+        log(f"  Vulnerabilities found: {true_positives} / {gt_count}")
+        log(f"  False positives: {false_positives}")
+        log(f"  Steps used: {step_count} / {max_fallback_steps - 2}")
+        log(f"  Score: {final_score:.3f}")
 
-    security_analysis = {}
-    try:
-        analysis_resp = http_client.get("/state")
-        analysis_resp.raise_for_status()
-        state = analysis_resp.json()
-        security_analysis = state.get("security_analysis", {})
-    except Exception:
-        security_analysis = {"status": "analysis_summary_unavailable"}
+        security_analysis = {}
+        try:
+            analysis_resp = http_client.get("/state")
+            analysis_resp.raise_for_status()
+            state = analysis_resp.json()
+            security_analysis = state.get("security_analysis", {})
+        except Exception:
+            security_analysis = {"status": "analysis_summary_unavailable"}
 
-    missed_vulnerabilities = []
-    try:
-        state_resp = http_client.get("/state")
-        state_resp.raise_for_status()
-        state = state_resp.json()
-        ground_truth = state.get("ground_truth", [])
-        findings = state.get("findings", [])
-        reported = {
-            (f["file"], f["line_number"], f["vulnerability_type"])
-            for f in findings
-        }
-        for gt in ground_truth:
-            key = (gt["file"], gt["line"], gt["type"])
-            if key not in reported:
-                missed_vulnerabilities.append(gt)
-    except Exception:
         missed_vulnerabilities = []
+        try:
+            state_resp = http_client.get("/state")
+            state_resp.raise_for_status()
+            state = state_resp.json()
+            ground_truth = state.get("ground_truth", [])
+            findings = state.get("findings", [])
+            reported = {
+                (f["file"], f["line_number"], f["vulnerability_type"])
+                for f in findings
+            }
+            for gt in ground_truth:
+                key = (gt["file"], gt["line"], gt["type"])
+                if key not in reported:
+                    missed_vulnerabilities.append(gt)
+        except Exception:
+            missed_vulnerabilities = []
 
-    return {
-        "task_id": task_id,
-        "final_score": final_score,
-        "steps": step_logs,
-        "total_steps": step_count,
-        "true_positives": true_positives,
-        "false_positives": false_positives,
-        "ground_truth_count": gt_count,
-        "missed_vulnerabilities": missed_vulnerabilities,
-        "security_analysis": security_analysis,
-    }
+        return {
+            "task_id": task_id,
+            "final_score": final_score,
+            "steps": step_logs,
+            "total_steps": step_count,
+            "true_positives": true_positives,
+            "false_positives": false_positives,
+            "ground_truth_count": gt_count,
+            "missed_vulnerabilities": missed_vulnerabilities,
+            "security_analysis": security_analysis,
+        }
+    except Exception as e:
+        protocol_exc = e
+        raise
+    finally:
+        if protocol_started:
+            ep_score = float(last_result.get("info", {}).get("episode_score", 0.0))
+            done_ok = bool(last_result.get("done", False))
+            success = protocol_exc is None and done_ok
+            _emit_protocol_end(success, protocol_step_n, ep_score, protocol_rewards)
 
 
 def run_deterministic_baseline() -> list[dict]:
@@ -913,8 +1047,8 @@ def run_deterministic_baseline() -> list[dict]:
 
 def print_comparison(llm_results: list[dict], baseline_results: list[dict]) -> None:
     """Print task-level and overall LLM-vs-baseline comparison."""
-    print("\n  DETERMINISTIC VS LLM", flush=True)
-    print("  " + "-" * 58, flush=True)
+    log("\n  DETERMINISTIC VS LLM")
+    log("  " + "-" * 58)
     llm_by_task = {r["task_id"]: r for r in llm_results}
     base_by_task = {r["task_id"]: r for r in baseline_results}
     for task_id in [1, 2, 3]:
@@ -922,15 +1056,14 @@ def print_comparison(llm_results: list[dict], baseline_results: list[dict]) -> N
         base = base_by_task.get(task_id, {})
         llm_score = llm.get("final_score", 0.0)
         base_score = base.get("final_score", 0.0)
-        print(
+        log(
             f"  Task {task_id}: LLM {llm_score:.3f} | Deterministic {base_score:.3f} | "
             f"Gap {llm_score - base_score:+.3f}",
-            flush=True,
         )
     llm_overall = sum(r.get("final_score", 0.0) for r in llm_results) / 3 if llm_results else 0.0
     base_overall = sum(r.get("final_score", 0.0) for r in baseline_results) / 3 if baseline_results else 0.0
-    print(f"  Overall gap: {llm_overall - base_overall:+.3f}", flush=True)
-    print("  " + "-" * 58, flush=True)
+    log(f"  Overall gap: {llm_overall - base_overall:+.3f}")
+    log("  " + "-" * 58)
 
 
 def main():
@@ -939,40 +1072,38 @@ def main():
     GLOBAL_START_TIME = time.time()
     start_time = GLOBAL_START_TIME
 
-    print("\n" + "=" * 60, flush=True)
-    print("  SECURITY VULNERABILITY SCANNER — INFERENCE", flush=True)
-    print(f"  Model: {MODEL_NAME}", flush=True)
-    print(f"  API: {API_BASE_URL}", flush=True)
-    print(f"  Environment: {ENV_BASE_URL}", flush=True)
-    print(
+    log("\n" + "=" * 60)
+    log("  SECURITY VULNERABILITY SCANNER — INFERENCE")
+    log(f"  Model: {MODEL_NAME}")
+    log(f"  API: {API_BASE_URL}")
+    log(f"  Environment: {ENV_BASE_URL}")
+    log(
         f"  Sampling: temperature={TEMPERATURE}, top_p={TOP_P}, "
         f"max_tokens={MAX_TOKENS}, seed={OPENAI_SEED if OPENAI_SEED is not None else 'none'}",
-        flush=True,
     )
-    print(
+    log(
         f"  Repro mode: {'ON' if REPRODUCIBLE_MODE else 'OFF'} "
         f"(baseline_only={'ON' if REPRO_BASELINE_ONLY else 'OFF'})",
-        flush=True,
     )
-    print("=" * 60, flush=True)
+    log("=" * 60)
 
     try:
         health = http_client.get("/health")
         health.raise_for_status()
-        print(f"  Environment health: {health.json()}", flush=True)
+        log(f"  Environment health: {health.json()}")
     except Exception as e:
-        print(f"\n  [ERROR] Cannot reach environment at {ENV_BASE_URL}: {e}", flush=True)
-        print("  Make sure the server is running: uvicorn main:app --port 7860", flush=True)
+        log(f"\n  [ERROR] Cannot reach environment at {ENV_BASE_URL}: {e}")
+        log("  Make sure the server is running: uvicorn main:app --port 7860")
         return
 
-    print("\n  Running deterministic baseline...", flush=True)
+    log("\n  Running deterministic baseline...")
     baseline_results = run_deterministic_baseline()
 
     results = []
     if REPRO_BASELINE_ONLY:
-        print("  REPRO_BASELINE_ONLY is enabled — skipping LLM run.", flush=True)
+        log("  REPRO_BASELINE_ONLY is enabled — skipping LLM run.")
     elif client is None:
-        print("  HF_TOKEN not set — skipping LLM run.", flush=True)
+        log("  HF_TOKEN / OPENAI_API_KEY not set — skipping LLM run.")
     else:
         # Each task runs exactly once, isolated with try/except
         for task_id in [1, 2, 3]:
@@ -980,8 +1111,8 @@ def main():
                 result = run_task(task_id)
                 results.append(result)
             except Exception as e:
-                print(f"\n  [ERROR] Task {task_id} failed with error: {e}", flush=True)
-                print(f"  Continuing to next task...", flush=True)
+                log(f"\n  [ERROR] Task {task_id} failed with error: {e}")
+                log("  Continuing to next task...")
                 results.append({
                     "task_id": task_id,
                     "final_score": 0.0,
@@ -999,7 +1130,7 @@ def main():
     minutes = int(elapsed // 60)
     seconds = int(elapsed % 60)
 
-    print("  FINAL SUMMARY", flush=True)
+    log("  FINAL SUMMARY")
 
     task_names = {1: "Easy", 2: "Medium", 3: "Hard"}
     total_score = 0
@@ -1011,24 +1142,33 @@ def main():
         gt = r["ground_truth_count"]
         fp = r["false_positives"]
         error_tag = " [FAILED]" if "error" in r else ""
-        print(
+        log(
             f"  Task {tid} ({task_names[tid]:>6s}):  {score:.3f}  "
             f"({tp}/{gt} found, {fp} FP, {r['total_steps']} steps){error_tag}",
-            flush=True,
         )
 
     overall = total_score / (len(results) if results else len(baseline_results))
-    print(f"\n  Overall:         {overall:.3f}", flush=True)
-    print(f"  Time elapsed:    {minutes}m {seconds}s", flush=True)
+    log(f"\n  Overall:         {overall:.3f}")
+    log(f"  Time elapsed:    {minutes}m {seconds}s")
 
     if results:
         print_comparison(results, baseline_results)
     else:
-        print("  LLM comparison unavailable (no HF_TOKEN).", flush=True)
+        log("  LLM comparison unavailable (no API key).")
 
-    print("=" * 60, flush=True)
+    log("=" * 60)
 
     results_file = "inference_results.json"
+    submission_cfg = {
+        "api_base_url": API_BASE_URL,
+        "model_name": MODEL_NAME,
+        "env_base_url": ENV_BASE_URL,
+        "hf_token_set": bool(os.environ.get("HF_TOKEN")),
+        "openai_api_key_set": bool(os.environ.get("OPENAI_API_KEY")),
+    }
+    if LOCAL_IMAGE_NAME:
+        submission_cfg["local_image_name"] = LOCAL_IMAGE_NAME
+
     with open(results_file, "w") as f:
         json.dump({
             "results": results,
@@ -1036,6 +1176,7 @@ def main():
             "overall_score": overall,
             "elapsed_seconds": elapsed,
             "model": MODEL_NAME,
+            "submission_config": submission_cfg,
             "reproducibility": {
                 "temperature": TEMPERATURE,
                 "top_p": TOP_P,
@@ -1045,7 +1186,7 @@ def main():
                 "repro_baseline_only": REPRO_BASELINE_ONLY,
             },
         }, f, indent=2)
-    print(f"\n  Results saved to {results_file}", flush=True)
+    log(f"\n  Results saved to {results_file}")
 
 
 if __name__ == "__main__":

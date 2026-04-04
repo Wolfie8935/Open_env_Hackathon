@@ -35,7 +35,8 @@ env = SecurityScannerEnv()
 # ─── Request models ───────────────────────────────────────────
 
 class ResetRequest(BaseModel):
-    task_id: int
+    # Default lets automated pings (e.g. validate-submission.sh with body {}) succeed.
+    task_id: int = 1
 
 
 # ─── Helper functions ─────────────────────────────────────────
