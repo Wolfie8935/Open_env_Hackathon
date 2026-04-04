@@ -3,12 +3,10 @@ Security Scanner Environment — FastAPI Application
 Exposes the OpenEnv-compatible REST API on port 7860.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-
 from environment.env import SecurityScannerEnv
 from environment.models import Action, ActionType, TaskInfo
 
@@ -30,13 +28,6 @@ app.add_middleware(
 
 # Single global environment instance (one episode at a time)
 env = SecurityScannerEnv()
-
-
-# ─── Request models ───────────────────────────────────────────
-
-class ResetRequest(BaseModel):
-    # Default lets automated pings (e.g. validate-submission.sh with body {}) succeed.
-    task_id: int = 1
 
 
 # ─── Helper functions ─────────────────────────────────────────
@@ -102,15 +93,34 @@ async def list_tasks():
 
 
 @app.post("/reset")
-async def reset(request: ResetRequest):
-    """Start a new episode for the given task."""
-    if request.task_id not in (1, 2, 3):
+async def reset(request: Request):
+    """Start a new episode for the given task.
+
+    Accepts JSON ``{"task_id": 1|2|3}``, empty JSON ``{}``, or **no body**
+    (some automated checkers POST with no body). Missing ``task_id`` defaults to 1.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    task_id = body.get("task_id", 1)
+    try:
+        task_id = int(task_id)
+    except (TypeError, ValueError):
         raise HTTPException(
             status_code=422,
-            detail=f"Invalid task_id: {request.task_id}. Must be 1, 2, or 3.",
+            detail=f"Invalid task_id: {task_id!r}. Must be an integer 1, 2, or 3.",
         )
 
-    observation = env.reset(request.task_id)
+    if task_id not in (1, 2, 3):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid task_id: {task_id}. Must be 1, 2, or 3.",
+        )
+
+    observation = env.reset(task_id)
     return observation.model_dump()
 
 
