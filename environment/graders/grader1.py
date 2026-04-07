@@ -5,7 +5,7 @@ Counts correct type+file matches, adds line bonus, subtracts false positive pena
 
 from environment.graders.base_grader import BaseGrader
 from environment.models import Finding
-from environment.reward import normalize_vuln_type, _types_match, LINE_TOLERANCE
+from environment.reward import normalize_vuln_type, _types_match, LINE_TOLERANCE, _clamp_open_01
 
 
 class Grader1(BaseGrader):
@@ -54,4 +54,4 @@ class Grader1(BaseGrader):
             line_bonus / len(ground_truth) * 0.2
         ) - fp_penalty
 
-        return max(0.0, min(1.0, raw))
+        return _clamp_open_01(raw)

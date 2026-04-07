@@ -11,6 +11,8 @@ from environment.graders.grader1 import Grader1
 from environment.graders.grader2 import Grader2
 from environment.graders.grader3 import Grader3
 
+EPS = 1e-6
+
 
 # ─── Shared fixtures ──────────────────────────────────────────
 
@@ -88,11 +90,11 @@ class TestGrader1:
 
     def test_empty_findings(self):
         score = self.grader.grade([], SAMPLE_GT)
-        assert score == 0.0
+        assert score == EPS
 
     def test_all_false_positives(self):
         score = self.grader.grade(false_positive_findings(), SAMPLE_GT)
-        assert score <= 0.0 or score == 0.0  # clamped to 0
+        assert score == EPS
 
     def test_half_correct(self):
         score = self.grader.grade(half_findings(), SAMPLE_GT)
@@ -105,7 +107,7 @@ class TestGrader1:
         # The key behavior: score > 0 (not treated as false positives).
         score = self.grader.grade(wrong_line_findings(), SAMPLE_GT)
         assert score > 0  # type+file match gives positive score regardless of line
-        assert score >= 1.0  # all 3 GT entries found, base maxes out at 1.0
+        assert score >= 1.0 - EPS  # all 3 GT entries found, strict-open clamp near 1.0
 
 
 # ─── Grader 2 Tests ──────────────────────────────────────────
@@ -119,11 +121,11 @@ class TestGrader2:
 
     def test_empty_findings(self):
         score = self.grader.grade([], SAMPLE_GT)
-        assert score == 0.0
+        assert score == EPS
 
     def test_all_false_positives(self):
         score = self.grader.grade(false_positive_findings(), SAMPLE_GT)
-        assert score == 0.0
+        assert score == EPS
 
     def test_half_correct(self):
         score = self.grader.grade(half_findings(), SAMPLE_GT)
@@ -148,11 +150,11 @@ class TestGrader3:
 
     def test_empty_findings(self):
         score = self.grader.grade([], SAMPLE_GT)
-        assert score == 0.0
+        assert score == EPS
 
     def test_all_false_positives(self):
         score = self.grader.grade(false_positive_findings(), SAMPLE_GT)
-        assert score == 0.0
+        assert score == EPS
 
     def test_half_correct(self):
         score = self.grader.grade(half_findings(), SAMPLE_GT)
