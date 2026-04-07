@@ -98,7 +98,7 @@ Audit a production-style SaaS platform REST API with authentication, webhooks, X
 max_per_finding = 0.5 (Tasks 1-2) or 0.6 (Task 3)
 max_possible = num_vulnerabilities × max_per_finding
 raw_score = sum(max(0, step_reward) for each true positive)
-final_score = clamp(raw_score / max_possible, 0.0, 1.0)
+final_score = clamp(raw_score / max_possible, 0.01, 0.99)
 ```
 
 ## Vulnerability Types
@@ -170,7 +170,7 @@ Step 6  | report_vulnerability | views.py:67   IDOR                  High      +
 Step 7  | report_vulnerability | serializers.py:19  Mass Assignment  Medium    +0.30
 Step 8  | report_vulnerability | middleware.py:41   XXE Injection    High      +0.40
 Step 9  | add_note       | "JWT + Timing Attack + IDOR forms complete account takeover chain."
-Step 10 | mark_complete  | Score: 1.000 (7/7 found, 0 FP, chain bonus: +0.08, early bonus: +0.1)
+Step 10 | mark_complete  | Score: 0.990 (7/7 found, 0 FP, chain bonus: +0.08, early bonus: +0.1)
 ```
 
 **Key behaviors:** reads all files first → reports critical before medium → uses insights → documents chain reasoning → completes in 10/40 steps for early bonus.
@@ -183,12 +183,12 @@ Values below match `inference_results.json` from a full local run (same commit a
 
 | Task | Score | Findings | False Positives | Steps Used | Triage Score |
 |------|-------|----------|-----------------|------------|--------------|
-| Task 1 (Easy) | 1.000 | 3/3 | 0 | 5 | — |
-| Task 2 (Medium) | 1.000 | 5/5 | 0 | 8 | 0.700 |
-| Task 3 (Hard) | 0.935 | 7/7 | 1 | 13 | 0.679 |
-| **Overall** | **0.978** | — | — | — | — |
+| Task 1 (Easy) | 0.990 | 3/3 | 0 | 6 | — |
+| Task 2 (Medium) | 0.990 | 5/5 | 0 | 8 | 0.700 |
+| Task 3 (Hard) | 0.910 | 7/7 | 1 | 10 | 0.785 |
+| **Overall** | **0.960** | — | — | — | — |
 
-Wall time for that run: **~6m 21s** (under the **20 minute** hackathon inference cap).
+Wall time for that run: **~9m 50s** (under the **20 minute** hackathon inference cap).
 
 ### Rule-Based Deterministic Baseline (no LLM, zero API calls)
 
@@ -196,12 +196,12 @@ The environment ships with a deterministic regex scanner to prove discriminabili
 
 | Task | Score | Notes |
 |------|-------|-------|
-| Task 1 | 1.000 | Matches all easy-task findings |
+| Task 1 | 0.990 | Matches all easy-task findings (strict-open clamp ceiling) |
 | Task 2 | 0.440 | Captures subset of true patterns; misses several chain-linked signals |
-| Task 3 | 0.759 | Better coverage than Task 2, but weaker precision than LLM |
-| **Overall** | **0.733** | |
+| Task 3 | 0.760 | Better coverage than Task 2, but weaker precision than LLM |
+| **Overall** | **0.730** | |
 
-**Gap of +0.245** (LLM 0.978 vs deterministic 0.733) demonstrates the environment still rewards stronger reasoning and trajectory control, especially on medium/hard tasks.
+**Gap of +0.230** (LLM 0.960 vs deterministic 0.730) demonstrates the environment still rewards stronger reasoning and trajectory control, especially on medium/hard tasks.
 
 Sampling used for this run: `temperature=0.0`, `top_p=1.0`, `max_tokens=1500`, `OPENAI_SEED=42`, `REPRODUCIBLE_MODE=true`.
 
@@ -218,7 +218,7 @@ Phase 1 gates from the organizer brief, and how this repository addresses them:
 | **OpenEnv spec** | `openenv.yaml`, Pydantic models, `GET /state`, `POST /reset`, `POST /step`, `GET /validate`. Run `uv run openenv validate`. |
 | **Dockerfile builds** | `docker build -t security-scanner .` from repo root. |
 | **Baseline / inference completes** | Root `inference.py` runs deterministic baseline then LLM on tasks 1–3; writes `inference_results.json`. |
-| **3+ tasks, graders, scores in [0,1]** | Tasks 1–3 with graders; episode scores clamped to **[0, 1]**. |
+| **3+ tasks, graders, scores in (0,1)** | Tasks 1–3 with graders; published scores clamped to the strict-open interval **(0, 1)**. |
 | **Mandatory env vars** | **`HF_TOKEN`** is required (no default; script raises if unset). **`API_BASE_URL`** and **`MODEL_NAME`** have defaults in `inference.py` (`https://api.openai.com/v1`, `gpt-4.1-mini`); override via HF Space secrets or `.env` for your provider (e.g. NVIDIA NIM, Hugging Face router). **`ENV_BASE_URL`** must point at the live environment (e.g. Space URL or `http://localhost:7860`). |
 | **OpenAI client for all LLM calls** | `from openai import OpenAI` — all completions go through `client.chat.completions.create`. The environment is contacted with **`httpx`** only; that is not used for LLM inference. |
 | **Structured stdout** | See **OpenEnv RL Challenge — inference stdout contract** below. Default run: **protocol lines on stdout only**; use **`python inference.py --debug-mode`** for full human-readable logs on **stderr**. |
@@ -231,7 +231,7 @@ Per the hackathon brief, **`inference.py` lives in the repo root** and must emit
 
 1. **`[START]`** — once at episode begin: `task`, `env`, `model`
 2. **`[STEP]`** — once per environment step, immediately after each successful `POST /step`: `step`, `action`, `reward` (2 decimals), `done` (`true`/`false`), `error` (raw `last_action_error` or `null`)
-3. **`[END]`** — once after the episode finishes (including on exception after `[START]`): `success`, `steps`, `rewards` (comma-separated, 2 decimals each)
+3. **`[END]`** — once after the episode finishes (including on exception after `[START]`): `success`, `steps`, `score`, `rewards` (comma-separated, 2 decimals each)
 
 **Rules:** one line per record; no embedded newlines; `done` / `success` are lowercase booleans. Human-oriented diagnostics are **not** printed to stdout in the default mode (they appear on stderr only when you pass **`--debug-mode`**).
 
@@ -239,9 +239,9 @@ Per the hackathon brief, **`inference.py` lives in the repo root** and must emit
 
 ```
 [START] task=Single-File-Audit env=security-vulnerability-scanner model=meta/llama-3.1-70b-instruct
-[STEP] step=1 action=request_file(filename=config.py) reward=0.00 done=false error=null
+[STEP] step=1 action=request_file(filename=config.py) reward=0.01 done=false error=null
 [STEP] step=2 action=report_vulnerability(file=vulnerable_code.py,line=116,type=Command_Injection) reward=0.50 done=false error=null
-[END] success=true steps=5 rewards=0.00,0.50,0.50,0.50,0.00
+[END] success=true steps=5 score=0.99 rewards=0.01,0.50,0.50,0.50,0.01
 ```
 
 A full run executes **tasks 1 → 2 → 3**, so you will see **three** `[START]`…`[END]` blocks back-to-back on stdout (the deterministic baseline uses the same HTTP `/step` API but does not emit this protocol — only the LLM task loop does).

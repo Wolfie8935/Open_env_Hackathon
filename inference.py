@@ -24,7 +24,7 @@ environment REST API (ENV_BASE_URL), not for inference.
 Submission stdout (stdout only — human logs go to stderr):
     [START] task=<name> env=<benchmark> model=<model>
     [STEP] step=<n> action=<str> reward=<0.00> done=<true|false> error=<msg|null>
-    [END] success=<true|false> steps=<n> rewards=<r1,r2,...>
+    [END] success=<true|false> steps=<n> score=<0.00> rewards=<r1,r2,...>
 """
 
 import argparse
@@ -350,14 +350,13 @@ BENCHMARK_ENV = os.environ.get("OPENENV_BENCHMARK", "security-vulnerability-scan
 
 
 def _protocol_fmt_reward(x: float) -> str:
-    """Format reward for [STEP]/[END] lines in strict open interval (0,1)."""
-    v = _strict_task_score(x)
-    return f"{v:.2f}"
+    """Format reward for protocol lines with exactly 2 decimals."""
+    return f"{float(x):.2f}"
 
 
 def _protocol_fmt_step_reward(x: float) -> str:
-    """Format step reward in strict open interval (0,1)."""
-    return _protocol_fmt_reward(x)
+    """Format raw step reward with exactly 2 decimals (can be negative)."""
+    return f"{float(x):.2f}"
 
 
 def _strict_task_score(x: float) -> float:
@@ -642,7 +641,7 @@ def call_llm_with_retry(messages: list[dict], max_retries: int = 3) -> str:
 def should_allow_mark_complete(findings: list, task_id: int, step: int) -> tuple[bool, str]:
     """Check if the agent has found enough vulnerabilities before allowing mark_complete."""
     expected = EXPECTED_VULN_COUNTS.get(task_id, 0)
-    found_count = len([f for f in findings if f.get("reward", 0) > 0])
+    found_count = len([f for f in findings if f.get("is_true_positive", False)])
 
     if found_count < expected:
         remaining = expected - found_count
@@ -764,7 +763,7 @@ def run_task(task_id: int) -> dict:
         last_result = r
         protocol_step_n += 1
         rw = float(r.get("reward", 0.0))
-        protocol_step_reward = _strict_task_score(rw)
+        protocol_step_reward = rw
         protocol_rewards.append(protocol_step_reward)
         err_raw = r.get("info", {}).get("last_action_error")
         _emit_protocol_step(
@@ -872,6 +871,7 @@ def run_task(task_id: int) -> dict:
             reward = result.get("reward", 0)
             feedback = result.get("observation", {}).get("feedback", "")
             action_type = action.get("action_type", "unknown")
+            breakdown = result.get("info", {}).get("step_reward_breakdown", {}) or {}
             current_episode_score = _strict_task_score(
                 result.get("info", {}).get("episode_score", 0.0)
             )
@@ -885,19 +885,20 @@ def run_task(task_id: int) -> dict:
                     "reward": reward,
                     "vulnerability_type": vuln_type,
                     "file": vuln_file,
+                    "is_true_positive": bool(breakdown.get("type_match", 0.0) > 0.0),
                 }
                 all_findings_with_rewards.append(finding_record)
-                if reward > 0:
+                if finding_record["is_true_positive"]:
                     true_positives += 1
                     reported_keys.add((vuln_file, vuln_type))
-                elif reward < 0:
+                elif breakdown.get("false_positive", 0.0) < 0.0:
                     false_positives += 1
 
             step_logs.append({
                 "step": step_count,
                 "action_type": action_type,
                 "action": action,
-                "reward": normalized_step_reward,
+                "reward": reward,
                 "feedback": feedback,
             })
 
@@ -1023,7 +1024,7 @@ def run_task(task_id: int) -> dict:
             done_ok = bool(last_result.get("done", False))
             success = protocol_exc is None and done_ok
             final_episode_score = _strict_task_score(
-                last_result.get("info", {}).get("episode_score", 0.0)
+                float(last_result.get("info", {}).get("episode_score", 0.0))
             )
             _emit_protocol_end(success, protocol_step_n, final_episode_score, protocol_rewards)
 
