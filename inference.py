@@ -350,15 +350,13 @@ BENCHMARK_ENV = os.environ.get("OPENENV_BENCHMARK", "security-vulnerability-scan
 
 
 def _protocol_fmt_reward(x: float) -> str:
-    """Format reward for [STEP]/[END] lines.
+    """Format reward for [STEP]/[END] lines with exactly 2 decimals."""
+    return f"{float(x):.2f}"
 
-    The evaluator requires each printed score to be strictly between
-    0 and 1 — i.e. the *formatted text* must never read "0.00" or "1.00".
-    We clamp to [0.01, 0.99] at the formatting boundary so the 2-decimal
-    representation always satisfies the open-interval contract.
-    """
-    v = max(0.01, min(0.99, float(x)))
-    return f"{v:.2f}"
+
+def _protocol_fmt_step_reward(x: float) -> str:
+    """Format raw step reward with exactly 2 decimals (can be negative)."""
+    return f"{float(x):.2f}"
 
 
 def _strict_task_score(x: float) -> float:
@@ -419,7 +417,7 @@ def _emit_protocol_step(
 ) -> None:
     err = _protocol_error_field(last_action_error)
     print(
-        f"[STEP] step={step_n} action={action_s} reward={_protocol_fmt_reward(reward)} "
+        f"[STEP] step={step_n} action={action_s} reward={_protocol_fmt_step_reward(reward)} "
         f"done={'true' if done else 'false'} error={err}",
         flush=True,
     )
@@ -430,6 +428,8 @@ def _emit_protocol_end(
     step_count: int,
     rewards: list[float],
 ) -> None:
+    if not rewards:
+        rewards = [0.0]
     r_csv = ",".join(_protocol_fmt_reward(x) for x in rewards)
     print(
         f"[END] success={'true' if success else 'false'} steps={step_count} "
@@ -753,22 +753,23 @@ def run_task(task_id: int) -> dict:
     result: dict = {}
     obs: dict = {}
     max_fallback_steps = 42
+    prev_episode_score = 0.0
+    prev_protocol_episode_score = 0.0
 
     def do_step(act: dict) -> dict:
-        nonlocal last_result, protocol_step_n
+        nonlocal last_result, protocol_step_n, prev_protocol_episode_score
         r = env_step(act)
         last_result = r
         protocol_step_n += 1
-        rw = float(r.get("reward", 0.0))
-        # Clamp emitted rewards to open interval (0, 1) as required by the platform.
-        # Internal reward values (used for scoring logic) are read from `r` directly.
-        clamped_rw = _strict_task_score(rw)
-        protocol_rewards.append(clamped_rw)
+        episode_score_now = float(r.get("info", {}).get("episode_score", prev_protocol_episode_score))
+        protocol_step_reward = round(episode_score_now - prev_protocol_episode_score, 2)
+        prev_protocol_episode_score = episode_score_now
+        protocol_rewards.append(protocol_step_reward)
         err_raw = r.get("info", {}).get("last_action_error")
         _emit_protocol_step(
             protocol_step_n,
             _protocol_action_str(act),
-            clamped_rw,
+            protocol_step_reward,
             bool(r.get("done", False)),
             err_raw,
         )
@@ -870,6 +871,11 @@ def run_task(task_id: int) -> dict:
             reward = result.get("reward", 0)
             feedback = result.get("observation", {}).get("feedback", "")
             action_type = action.get("action_type", "unknown")
+            current_episode_score = _strict_task_score(
+                result.get("info", {}).get("episode_score", 0.0)
+            )
+            normalized_step_reward = round(current_episode_score - prev_episode_score, 2)
+            prev_episode_score = current_episode_score
 
             if action_type == "report_vulnerability":
                 vuln_file = action.get("payload", {}).get("file", "")
@@ -890,7 +896,7 @@ def run_task(task_id: int) -> dict:
                 "step": step_count,
                 "action_type": action_type,
                 "action": action,
-                "reward": reward,
+                "reward": normalized_step_reward,
                 "feedback": feedback,
             })
 
@@ -908,15 +914,19 @@ def run_task(task_id: int) -> dict:
                         "step": step_count,
                         "action_type": "mark_complete",
                         "action": mc,
-                        "reward": float(final_result.get("reward", 0.0)),
+                        "reward": round(
+                            _strict_task_score(final_result.get("info", {}).get("episode_score", 0.0))
+                            - prev_episode_score,
+                            2,
+                        ),
                         "feedback": final_result.get("observation", {}).get("feedback", "forced by timeout"),
                         "forced": True,
                     })
                     return {
                         "task_id": task_id,
-                        "final_score": _strict_task_score(
+                        "final_score": round(_strict_task_score(
                             final_result.get("info", {}).get("episode_score", 0.0)
-                        ),
+                        ), 2),
                         "steps": step_logs,
                         "total_steps": step_count,
                         "true_positives": true_positives,
@@ -937,9 +947,9 @@ def run_task(task_id: int) -> dict:
                     })
                     return {
                         "task_id": task_id,
-                        "final_score": _strict_task_score(
+                        "final_score": round(_strict_task_score(
                             result.get("info", {}).get("episode_score", 0.0)
-                        ),
+                        ), 2),
                         "steps": step_logs,
                         "total_steps": step_count,
                         "true_positives": true_positives,
@@ -958,7 +968,7 @@ def run_task(task_id: int) -> dict:
             if len(messages) > 30:
                 messages = messages[:1] + messages[-20:]
 
-        final_score = _strict_task_score(result.get("info", {}).get("episode_score", 0.0))
+        final_score = round(_strict_task_score(result.get("info", {}).get("episode_score", 0.0)), 2)
 
         log(f"\n  -- Task {task_id} Summary --")
         log(f"  Vulnerabilities found: {true_positives} / {gt_count}")
@@ -1130,7 +1140,7 @@ def run_deterministic_baseline() -> list[dict]:
         info = final.get("info", {})
         baseline_results.append({
             "task_id": task_id,
-            "final_score": _strict_task_score(info.get("episode_score", 0.0)),
+            "final_score": round(_strict_task_score(info.get("episode_score", 0.0)), 2),
             "true_positives": len([f for f in final.get("observation", {}).get("current_findings", [])]),
             "ground_truth_count": info.get("ground_truth_count", 0),
             "false_positives": max(0, len(detected) - info.get("ground_truth_count", 0)),
@@ -1241,7 +1251,7 @@ def main():
                 log("  Continuing to next task...")
                 results.append({
                     "task_id": task_id,
-                    "final_score": _strict_task_score(0.0),
+                    "final_score": round(_strict_task_score(0.0), 2),
                     "steps": [],
                     "total_steps": 0,
                     "true_positives": 0,
@@ -1273,7 +1283,7 @@ def main():
             f"({tp}/{gt} found, {fp} FP, {r['total_steps']} steps){error_tag}",
         )
 
-    overall = total_score / (len(results) if results else len(baseline_results))
+    overall = round(total_score / (len(results) if results else len(baseline_results)), 2)
     log(f"\n  Overall:         {overall:.3f}")
     log(f"  Time elapsed:    {minutes}m {seconds}s")
 
