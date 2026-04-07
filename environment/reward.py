@@ -234,10 +234,8 @@ def compute_step_reward(
         fp_penalty = -0.1
         if ENABLE_ANTI_GAMING_ESCALATION:
             prior_false_positives = _count_false_positives(already_found, ground_truth)
-            if prior_false_positives >= 2:
-                fp_penalty = -0.15
-            elif prior_false_positives >= 1:
-                fp_penalty = -0.12
+            if prior_false_positives >= 1:
+                fp_penalty = -0.2
         breakdown["false_positive"] = fp_penalty
         return fp_penalty, breakdown
 

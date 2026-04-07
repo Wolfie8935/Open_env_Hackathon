@@ -170,7 +170,7 @@ Step 6  | report_vulnerability | views.py:67   IDOR                  High      +
 Step 7  | report_vulnerability | serializers.py:19  Mass Assignment  Medium    +0.30
 Step 8  | report_vulnerability | middleware.py:41   XXE Injection    High      +0.40
 Step 9  | add_note       | "JWT + Timing Attack + IDOR forms complete account takeover chain."
-Step 10 | mark_complete  | Score: 0.990 (7/7 found, 0 FP, chain bonus: +0.08, early bonus: +0.1)
+Step 10 | mark_complete  | Score: 0.890 (7/7 found, penalties applied, chain bonus considered)
 ```
 
 **Key behaviors:** reads all files first → reports critical before medium → uses insights → documents chain reasoning → completes in 10/40 steps for early bonus.
@@ -185,10 +185,10 @@ Values below match `inference_results.json` from a full local run (same commit a
 |------|-------|----------|-----------------|------------|--------------|
 | Task 1 (Easy) | 0.990 | 3/3 | 0 | 6 | — |
 | Task 2 (Medium) | 0.990 | 5/5 | 0 | 8 | 0.700 |
-| Task 3 (Hard) | 0.910 | 7/7 | 1 | 10 | 0.785 |
+| Task 3 (Hard) | 0.890 | 7/7 | 0 | 11 | 0.607 |
 | **Overall** | **0.960** | — | — | — | — |
 
-Wall time for that run: **~9m 50s** (under the **20 minute** hackathon inference cap).
+Wall time for that run: **~9m 09s** (under the **20 minute** hackathon inference cap).
 
 ### Rule-Based Deterministic Baseline (no LLM, zero API calls)
 
@@ -218,7 +218,7 @@ Phase 1 gates from the organizer brief, and how this repository addresses them:
 | **OpenEnv spec** | `openenv.yaml`, Pydantic models, `GET /state`, `POST /reset`, `POST /step`, `GET /validate`. Run `uv run openenv validate`. |
 | **Dockerfile builds** | `docker build -t security-scanner .` from repo root. |
 | **Baseline / inference completes** | Root `inference.py` runs deterministic baseline then LLM on tasks 1–3; writes `inference_results.json`. |
-| **3+ tasks, graders, scores in (0,1)** | Tasks 1–3 with graders; published scores clamped to the strict-open interval **(0, 1)**. |
+| **3+ tasks, graders, scores in (0,1)** | Tasks 1–3 with graders; final task score is clamped to the strict-open interval **(0, 1)**. |
 | **Mandatory env vars** | **`HF_TOKEN`** is required (no default; script raises if unset). **`API_BASE_URL`** and **`MODEL_NAME`** have defaults in `inference.py` (`https://api.openai.com/v1`, `gpt-4.1-mini`); override via HF Space secrets or `.env` for your provider (e.g. NVIDIA NIM, Hugging Face router). **`ENV_BASE_URL`** must point at the live environment (e.g. Space URL or `http://localhost:7860`). |
 | **OpenAI client for all LLM calls** | `from openai import OpenAI` — all completions go through `client.chat.completions.create`. The environment is contacted with **`httpx`** only; that is not used for LLM inference. |
 | **Structured stdout** | See **OpenEnv RL Challenge — inference stdout contract** below. Default run: **protocol lines on stdout only**; use **`python inference.py --debug-mode`** for full human-readable logs on **stderr**. |
@@ -239,9 +239,10 @@ Per the hackathon brief, **`inference.py` lives in the repo root** and must emit
 
 ```
 [START] task=Single-File-Audit env=security-vulnerability-scanner model=meta/llama-3.1-70b-instruct
-[STEP] step=1 action=request_file(filename=config.py) reward=0.01 done=false error=null
+[STEP] step=1 action=request_file(filename=config.py) reward=0.00 done=false error=null
 [STEP] step=2 action=report_vulnerability(file=vulnerable_code.py,line=116,type=Command_Injection) reward=0.50 done=false error=null
-[END] success=true steps=5 score=0.99 rewards=0.01,0.50,0.50,0.50,0.01
+[STEP] step=9 action=report_vulnerability(file=config.py,line=8,type=Hardcoded_Secret) reward=-0.05 done=false error=null
+[END] success=true steps=11 score=0.89 rewards=0.00,0.55,0.60,0.60,0.50,0.40,0.50,0.00,-0.05,0.40,0.00
 ```
 
 A full run executes **tasks 1 → 2 → 3**, so you will see **three** `[START]`…`[END]` blocks back-to-back on stdout (the deterministic baseline uses the same HTTP `/step` API but does not emit this protocol — only the LLM task loop does).
