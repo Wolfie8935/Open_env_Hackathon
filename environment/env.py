@@ -3,6 +3,8 @@ Security Scanner Environment
 The main environment class implementing the OpenEnv contract.
 """
 
+import math
+
 from fastapi import HTTPException
 
 from environment.models import (
@@ -18,6 +20,7 @@ from environment.reward import (
     compute_step_reward,
     compute_triage_score,
     compute_severity_coverage,
+    _clamp_open_01,
 )
 from environment.state_manager import StateManager
 from environment.config import ENABLE_EVIDENCE_MODE, ENABLE_PRECISION_SCORING
@@ -36,6 +39,15 @@ from environment.chain_objective import (
 )
 
 DUPLICATE_PENALTY = -0.05
+
+
+def _fmt_open_score_3(x: float) -> str:
+    """Format score with max 3 decimals, strictly within (0,1) as displayed text."""
+    y = _clamp_open_01(x)
+    # Truncate (not round) so 0.999999 won't display as 1.000
+    shown = math.floor(y * 1000.0) / 1000.0
+    shown = max(0.001, min(0.999, shown))
+    return f"{shown:.3f}"
 
 class SecurityScannerEnv:
     """OpenEnv-compatible security vulnerability scanner environment."""
@@ -367,9 +379,10 @@ class SecurityScannerEnv:
             else 0.0
         )
 
-        feedback = f"Episode complete. Score: {episode_score:.3f}"
+        # Keep displayed score strictly in (0,1) with max 3 decimals.
+        feedback = f"Episode complete. Score: {_fmt_open_score_3(episode_score)}"
         if self.state_manager.triage_mode:
-            feedback += f" | Triage score: {final_triage_score:.3f}"
+            feedback += f" | Triage score: {_fmt_open_score_3(final_triage_score)}"
         if chains:
             feedback += f" | Attack chains: {', '.join(chains)}"
         if self.state_manager.chain_complete:

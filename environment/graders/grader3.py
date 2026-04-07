@@ -81,9 +81,9 @@ class Grader3(BaseGrader):
     def grade(self, findings: list[Finding], ground_truth: list[dict],
               notes: list[str] | None = None) -> float:
         if not ground_truth:
-            return 0.0
+            return _clamp_open_01(0.0)
         if not findings:
-            return 0.0
+            return _clamp_open_01(0.0)
 
         entry_scores = []
         used_findings: set[int] = set()

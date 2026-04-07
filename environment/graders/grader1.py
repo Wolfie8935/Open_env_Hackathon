@@ -19,7 +19,7 @@ class Grader1(BaseGrader):
 
     def grade(self, findings: list[Finding], ground_truth: list[dict]) -> float:
         if not ground_truth:
-            return 0.0
+            return _clamp_open_01(0.0)
 
         correct_count = 0
         line_bonus = 0.0
