@@ -6,12 +6,7 @@ and methodology documentation. No LLM calls.
 
 from environment.graders.base_grader import BaseGrader
 from environment.models import Finding
-from environment.reward import (
-    _types_match,
-    _has_fix_quality,
-    LINE_TOLERANCE,
-    _clamp_open_01,
-)
+from environment.reward import _types_match, _has_fix_quality, LINE_TOLERANCE
 
 
 # Terms that indicate specific, actionable fixes (not generic advice)
@@ -174,4 +169,4 @@ class Grader3(BaseGrader):
                 notes_bonus = 0.02
 
         raw = coverage - fp_penalty + notes_bonus
-        return _clamp_open_01(raw)
+        return max(0.0, min(1.0, raw))
