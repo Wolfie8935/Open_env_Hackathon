@@ -356,7 +356,7 @@ class StateManager:
     ) -> float:
         """O(1) episode scoring from cached totals (matches compute_episode_score)."""
         if self.task is None or not self.task.ground_truth:
-            return 0.0
+            return _clamp_open_01(0.0)
 
         total_reward = float(self._episode_sum_positive_step_rewards)
 

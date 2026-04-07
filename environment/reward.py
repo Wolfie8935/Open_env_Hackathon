@@ -10,11 +10,16 @@ from environment.config import (
     ENABLE_EVIDENCE_MODE,
 )
 
-STRICT_SCORE_EPS = 1e-6
+STRICT_SCORE_EPS = 0.01
 
 
 def _clamp_open_01(score: float) -> float:
-    """Clamp to open interval (0, 1) for validator compatibility."""
+    """Clamp to open interval (0, 1) for validator compatibility.
+
+    eps=0.01 ensures that after 2-decimal formatting the score string
+    can never be "0.00" or "1.00" — the evaluator rejects both boundary
+    values.
+    """
     return max(STRICT_SCORE_EPS, min(1.0 - STRICT_SCORE_EPS, float(score)))
 
 #Type Alias Map
@@ -428,7 +433,7 @@ def compute_episode_score(
 ) -> float:
     """Compute the final normalized score for a complete episode."""
     if not ground_truth:
-        return 0.0
+        return _clamp_open_01(0.0)
 
     max_per_finding = 0.6 if task_id == 3 else 0.5
     max_possible = len(ground_truth) * max_per_finding

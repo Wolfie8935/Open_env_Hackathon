@@ -11,7 +11,7 @@ from environment.graders.grader1 import Grader1
 from environment.graders.grader2 import Grader2
 from environment.graders.grader3 import Grader3
 
-EPS = 1e-6
+EPS = 0.01  # Must match environment.reward.STRICT_SCORE_EPS
 
 
 # ─── Shared fixtures ──────────────────────────────────────────
@@ -107,7 +107,7 @@ class TestGrader1:
         # The key behavior: score > 0 (not treated as false positives).
         score = self.grader.grade(wrong_line_findings(), SAMPLE_GT)
         assert score > 0  # type+file match gives positive score regardless of line
-        assert score >= 1.0 - EPS  # all 3 GT entries found, strict-open clamp near 1.0
+        assert score >= 1.0 - EPS  # all 3 GT entries found, clamped to 0.99
 
 
 # ─── Grader 2 Tests ──────────────────────────────────────────

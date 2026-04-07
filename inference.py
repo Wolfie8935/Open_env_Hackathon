@@ -350,12 +350,24 @@ BENCHMARK_ENV = os.environ.get("OPENENV_BENCHMARK", "security-vulnerability-scan
 
 
 def _protocol_fmt_reward(x: float) -> str:
-    return f"{float(x):.2f}"
+    """Format reward for [STEP]/[END] lines.
+
+    The evaluator requires each printed score to be strictly between
+    0 and 1 — i.e. the *formatted text* must never read "0.00" or "1.00".
+    We clamp to [0.01, 0.99] at the formatting boundary so the 2-decimal
+    representation always satisfies the open-interval contract.
+    """
+    v = max(0.01, min(0.99, float(x)))
+    return f"{v:.2f}"
 
 
 def _strict_task_score(x: float) -> float:
-    """Clamp published task scores to open interval (0,1)."""
-    eps = 1e-6
+    """Clamp published task scores to open interval (0,1).
+
+    eps=0.01 guarantees that even after .2f formatting the string
+    can never be "0.00" or "1.00" — the validator rejects both.
+    """
+    eps = 0.01
     return max(eps, min(1.0 - eps, float(x)))
 
 

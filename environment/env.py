@@ -44,9 +44,9 @@ DUPLICATE_PENALTY = -0.05
 def _fmt_open_score_3(x: float) -> str:
     """Format score with max 3 decimals, strictly within (0,1) as displayed text."""
     y = _clamp_open_01(x)
-    # Truncate (not round) so 0.999999 won't display as 1.000
+    # Truncate (not round) so 0.999 won't display as 1.000
     shown = math.floor(y * 1000.0) / 1000.0
-    shown = max(0.001, min(0.999, shown))
+    shown = max(0.010, min(0.990, shown))
     return f"{shown:.3f}"
 
 class SecurityScannerEnv:
