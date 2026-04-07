@@ -190,7 +190,7 @@ class SecurityScannerEnv:
             max_steps=self.active_task.max_steps,
         )
 
-        clamped_reward = max(-0.5, min(0.6, reward))
+        clamped_reward = _clamp_open_01(reward)
 
         return StepResult(
             observation=observation,
@@ -427,7 +427,7 @@ class SecurityScannerEnv:
                 priority_budget=0,
                 live_chain_status=live_chain_status,
             ),
-            reward=0.0,
+            reward=_clamp_open_01(0.0),
             done=True,
             info={
                 "episode_score": episode_score,

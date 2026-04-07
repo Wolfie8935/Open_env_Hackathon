@@ -350,13 +350,14 @@ BENCHMARK_ENV = os.environ.get("OPENENV_BENCHMARK", "security-vulnerability-scan
 
 
 def _protocol_fmt_reward(x: float) -> str:
-    """Format reward for [STEP]/[END] lines with exactly 2 decimals."""
-    return f"{float(x):.2f}"
+    """Format reward for [STEP]/[END] lines in strict open interval (0,1)."""
+    v = _strict_task_score(x)
+    return f"{v:.2f}"
 
 
 def _protocol_fmt_step_reward(x: float) -> str:
-    """Format raw step reward with exactly 2 decimals (can be negative)."""
-    return f"{float(x):.2f}"
+    """Format step reward in strict open interval (0,1)."""
+    return _protocol_fmt_reward(x)
 
 
 def _strict_task_score(x: float) -> float:
@@ -426,14 +427,16 @@ def _emit_protocol_step(
 def _emit_protocol_end(
     success: bool,
     step_count: int,
+    score: float,
     rewards: list[float],
 ) -> None:
     if not rewards:
-        rewards = [0.0]
+        rewards = [_strict_task_score(0.0)]
     r_csv = ",".join(_protocol_fmt_reward(x) for x in rewards)
+    score_s = _protocol_fmt_reward(score)
     print(
         f"[END] success={'true' if success else 'false'} steps={step_count} "
-        f"rewards={r_csv}",
+        f"score={score_s} rewards={r_csv}",
         flush=True,
     )
 
@@ -754,16 +757,14 @@ def run_task(task_id: int) -> dict:
     obs: dict = {}
     max_fallback_steps = 42
     prev_episode_score = 0.0
-    prev_protocol_episode_score = 0.0
 
     def do_step(act: dict) -> dict:
-        nonlocal last_result, protocol_step_n, prev_protocol_episode_score
+        nonlocal last_result, protocol_step_n
         r = env_step(act)
         last_result = r
         protocol_step_n += 1
-        episode_score_now = float(r.get("info", {}).get("episode_score", prev_protocol_episode_score))
-        protocol_step_reward = round(episode_score_now - prev_protocol_episode_score, 2)
-        prev_protocol_episode_score = episode_score_now
+        rw = float(r.get("reward", 0.0))
+        protocol_step_reward = _strict_task_score(rw)
         protocol_rewards.append(protocol_step_reward)
         err_raw = r.get("info", {}).get("last_action_error")
         _emit_protocol_step(
@@ -1021,7 +1022,10 @@ def run_task(task_id: int) -> dict:
         if protocol_started:
             done_ok = bool(last_result.get("done", False))
             success = protocol_exc is None and done_ok
-            _emit_protocol_end(success, protocol_step_n, protocol_rewards)
+            final_episode_score = _strict_task_score(
+                last_result.get("info", {}).get("episode_score", 0.0)
+            )
+            _emit_protocol_end(success, protocol_step_n, final_episode_score, protocol_rewards)
 
 
 def run_deterministic_baseline() -> list[dict]:
