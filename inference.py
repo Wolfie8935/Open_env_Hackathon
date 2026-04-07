@@ -748,12 +748,15 @@ def run_task(task_id: int) -> dict:
         last_result = r
         protocol_step_n += 1
         rw = float(r.get("reward", 0.0))
-        protocol_rewards.append(rw)
+        # Clamp emitted rewards to open interval (0, 1) as required by the platform.
+        # Internal reward values (used for scoring logic) are read from `r` directly.
+        clamped_rw = _strict_task_score(rw)
+        protocol_rewards.append(clamped_rw)
         err_raw = r.get("info", {}).get("last_action_error")
         _emit_protocol_step(
             protocol_step_n,
             _protocol_action_str(act),
-            rw,
+            clamped_rw,
             bool(r.get("done", False)),
             err_raw,
         )
