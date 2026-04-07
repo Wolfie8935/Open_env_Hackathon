@@ -392,7 +392,7 @@ For reproducible submissions, treat `.env` values as the source of truth for:
 ### Local Setup
 
 ```bash
-# Install dependencies
+# Install dependencies...
 pip install -r requirements.txt
 
 # Run tests
