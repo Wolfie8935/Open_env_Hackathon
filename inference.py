@@ -353,6 +353,12 @@ def _protocol_fmt_reward(x: float) -> str:
     return f"{float(x):.2f}"
 
 
+def _strict_task_score(x: float) -> float:
+    """Clamp published task scores to open interval (0,1)."""
+    eps = 1e-6
+    return max(eps, min(1.0 - eps, float(x)))
+
+
 def _protocol_error_field(err) -> str:
     """Format error= for [STEP] lines: literal null, or raw string on one line (spec: raw last_action_error)."""
     if err is None or err == "":
@@ -893,7 +899,9 @@ def run_task(task_id: int) -> dict:
                     })
                     return {
                         "task_id": task_id,
-                        "final_score": final_result.get("info", {}).get("episode_score", 0.0),
+                        "final_score": _strict_task_score(
+                            final_result.get("info", {}).get("episode_score", 0.0)
+                        ),
                         "steps": step_logs,
                         "total_steps": step_count,
                         "true_positives": true_positives,
@@ -914,7 +922,9 @@ def run_task(task_id: int) -> dict:
                     })
                     return {
                         "task_id": task_id,
-                        "final_score": result.get("info", {}).get("episode_score", 0.0),
+                        "final_score": _strict_task_score(
+                            result.get("info", {}).get("episode_score", 0.0)
+                        ),
                         "steps": step_logs,
                         "total_steps": step_count,
                         "true_positives": true_positives,
@@ -933,7 +943,7 @@ def run_task(task_id: int) -> dict:
             if len(messages) > 30:
                 messages = messages[:1] + messages[-20:]
 
-        final_score = result.get("info", {}).get("episode_score", 0.0)
+        final_score = _strict_task_score(result.get("info", {}).get("episode_score", 0.0))
 
         log(f"\n  -- Task {task_id} Summary --")
         log(f"  Vulnerabilities found: {true_positives} / {gt_count}")
@@ -1105,7 +1115,7 @@ def run_deterministic_baseline() -> list[dict]:
         info = final.get("info", {})
         baseline_results.append({
             "task_id": task_id,
-            "final_score": info.get("episode_score", 0.0),
+            "final_score": _strict_task_score(info.get("episode_score", 0.0)),
             "true_positives": len([f for f in final.get("observation", {}).get("current_findings", [])]),
             "ground_truth_count": info.get("ground_truth_count", 0),
             "false_positives": max(0, len(detected) - info.get("ground_truth_count", 0)),
@@ -1216,7 +1226,7 @@ def main():
                 log("  Continuing to next task...")
                 results.append({
                     "task_id": task_id,
-                    "final_score": 0.0,
+                    "final_score": _strict_task_score(0.0),
                     "steps": [],
                     "total_steps": 0,
                     "true_positives": 0,
