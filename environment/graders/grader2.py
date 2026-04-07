@@ -5,7 +5,13 @@ Per-entry scoring: 0.60 for type+file, +0.20 for line proximity, +0.20 for fix q
 
 from environment.graders.base_grader import BaseGrader
 from environment.models import Finding
-from environment.reward import normalize_vuln_type, _types_match, _has_fix_quality, LINE_TOLERANCE
+from environment.reward import (
+    normalize_vuln_type,
+    _types_match,
+    _has_fix_quality,
+    LINE_TOLERANCE,
+    _clamp_open_01,
+)
 
 
 class Grader2(BaseGrader):
@@ -68,4 +74,4 @@ class Grader2(BaseGrader):
 
         fp_penalty = fp_count * 0.1
 
-        return max(0.0, min(1.0, coverage - fp_penalty))
+        return _clamp_open_01(coverage - fp_penalty)

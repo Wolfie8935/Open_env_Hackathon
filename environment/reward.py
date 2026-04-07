@@ -10,6 +10,13 @@ from environment.config import (
     ENABLE_EVIDENCE_MODE,
 )
 
+STRICT_SCORE_EPS = 1e-6
+
+
+def _clamp_open_01(score: float) -> float:
+    """Clamp to open interval (0, 1) for validator compatibility."""
+    return max(STRICT_SCORE_EPS, min(1.0 - STRICT_SCORE_EPS, float(score)))
+
 #Type Alias Map
 TYPE_ALIASES: dict[str, list[str]] = {
     "hardcoded secret": [
@@ -459,4 +466,4 @@ def compute_episode_score(
         precision_bonus = 0.1 * precision
         total_reward += precision_bonus
 
-    return max(0.0, min(1.0, total_reward / max_possible))
+    return _clamp_open_01(total_reward / max_possible)

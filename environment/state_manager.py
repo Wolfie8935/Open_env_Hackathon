@@ -12,6 +12,7 @@ from environment.reward import (
     find_matching_ground_truth,
     compute_notes_bonus,
     _get_severity_weight,
+    _clamp_open_01,
 )
 
 #Cascading Discovery Triggers
@@ -376,7 +377,7 @@ class StateManager:
             precision = self._episode_true_positive_count / max(1, len(self.findings))
             total_reward += 0.1 * precision
 
-        return max(0.0, min(1.0, total_reward / self._episode_max_possible))
+        return _clamp_open_01(total_reward / self._episode_max_possible)
 
     def get_visible_file_contents(self) -> dict[str, str]:
         """Return contents of all currently visible files."""
